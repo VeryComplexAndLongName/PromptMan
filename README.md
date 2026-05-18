@@ -18,10 +18,8 @@ Prompt Man: FastAPI + Vue app for storing, versioning, and optimizing prompts.
 - Tagging plus AND/OR search.
 - Server-side prompt pagination with `X-Total-Count`.
 - Prompt delete with cascading cleanup of versions and access data.
-- Two optimization paths:
-  - `Optimize Prompt` -> GreaterPrompt
-  - `Optimize Prompt with LLM` -> provider-backed LLM flow
-- GreaterPrompt profiles: `fast`, `quality`, `ultra`.
+- Unified optimization path through pluggable optimizer backend.
+- Optimization profiles: `fast`, `quality`, `ultra`.
 - Multi-provider LLM support: Ollama, OpenAI, Anthropic.
 - Dynamic provider model discovery.
 - Per-user optimization config persisted in the database.
@@ -189,9 +187,9 @@ Deleting a project cascades to related prompt and access rows.
 
 - Manage personal optimization settings.
 - Configure LLM provider, model, base URL, timeout, and token.
-- Configure GreaterPrompt profile, model, and rounds.
+- Configure optimizer profile, model hint, and rounds.
 - Save settings per user.
-- Reuse the saved config in both optimize endpoints and model discovery.
+- Reuse the saved config in optimization and model discovery.
 - Viewer can inspect config values but cannot save changes.
 - The session banner shows UTC expiry time, a live expiry countdown, and the next scheduled refresh time.
 
@@ -227,25 +225,31 @@ Each user has a separate optimization config row in `configs`.
 
 - `GET /optimize/config` returns the current user's config.
 - `PUT /optimize/config` updates the current user's config.
-- `POST /optimize/greaterprompt` uses the current user's config.
-- `POST /optimize/llm` uses the current user's config.
+- `POST /optimize` uses the current user's config.
 - `GET /optimize/providers/{provider}/models` uses the current user's config as the default override source.
 
 One user's changes do not modify another user's config.
 
 ## Optimization Features
 
-### GreaterPrompt
+### Prompt Optimization
 
 Endpoint:
 
 ```text
-POST /optimize/greaterprompt
+POST /optimize
 ```
 
 - Main UI optimize path.
-- Uses gradient mode when a GreaterPrompt model is configured.
-- Falls back to lightweight mode when gradient optimization is unavailable.
+- Uses active backend configured by `OPTIMIZER_BACKEND`.
+- Falls back to heuristic mode when backend/provider call fails.
+
+**How Leo optimization works:**
+
+The default `leo` backend uses the `leo-prompt-optimizer` library.
+Leo structures a 10-step prompt-engineering methodology (analyze intent → extract components → enhance clarity → add context → define persona → structure instructions → add examples → specify output format → optimize tokens → insert placeholders) and submits it to an **LLM via the configured provider**.
+The LLM executes the structured rewrite based on that system prompt.
+An LLM provider (Ollama, OpenAI, Anthropic, etc.) **must be configured** to use Leo; without it the service falls back to the built-in heuristic engine.
 
 Profiles:
 
@@ -256,17 +260,14 @@ Profiles:
 - `ultra`
   - heaviest preset with more aggressive generation settings
 
-### LLM Optimization
+### Backend Model Providers
 
-Endpoint:
-
-```text
-POST /optimize/llm
-```
-
-- Secondary optimize path in the split-button menu.
-- Supports Ollama, OpenAI, and Anthropic.
-- Uses strict JSON response parsing plus fallback cleanup/repair logic.
+- Supported provider families: OpenAI-compatible, Anthropic, Groq, Gemini, Mistral.
+- Provider/model selection is controlled via per-user config and environment defaults.
+- Ollama can be used in two ways:
+  - `llm_provider: "ollama"` (native local profile)
+  - `llm_provider: "openai"` with `llm_base_url` pointing to Ollama's OpenAI-compatible endpoint
+    (the service auto-normalizes common local URLs like `http://127.0.0.1:11434` to `/v1`).
 
 ### Model Discovery
 
@@ -278,6 +279,7 @@ GET /optimize/providers/{provider}/models
 
 - Ollama: discovered via provider API.
 - OpenAI: discovered via provider API when a token is supplied.
+- OpenAI + local Ollama base URL: discovered through Ollama `/api/tags` compatibility path.
 - Anthropic: fixed built-in list.
 
 ## Optimization Config Example
@@ -313,21 +315,23 @@ GET /optimize/providers/{provider}/models
   - optional first-run admin password override
 - `PROMPTMAN_KEY`
   - optional machine/app key source for encryption
-- `GREATERPROMPT_MODEL_ID`
-  - fallback GreaterPrompt model when no per-user runtime override exists
-- `GREATERPROMPT_ROUNDS`
+- `OPTIMIZER_BACKEND`
+  - active optimizer backend name (default: `leo`)
+- `OPTIMIZER_MODEL_ID`
+  - optional fallback model hint when no per-user override exists
+- `OPTIMIZER_ROUNDS`
   - fallback round count
-- `GREATERPROMPT_PROFILE`
+- `OPTIMIZER_PROFILE`
   - fallback profile: `fast`, `quality`, `ultra`
-- `OPTIMIZE_LLM_PROVIDER`
+- `OPTIMIZER_PROVIDER`
   - fallback provider
-- `OPTIMIZE_LLM_MODEL`
+- `OPTIMIZER_MODEL`
   - fallback model
-- `OLLAMA_BASE_URL`
-  - fallback base URL for local/default provider usage
-- `OPTIMIZE_LLM_TIMEOUT_SECONDS`
+- `OPTIMIZER_BASE_URL`
+  - fallback provider base URL
+- `OPTIMIZER_TIMEOUT_SECONDS`
   - fallback timeout
-- `OPTIMIZE_LLM_API_TOKEN`
+- `OPTIMIZER_API_TOKEN`
   - fallback encrypted token source
 
 Per-user config returned by `/optimize/config` takes precedence over environment defaults for that user's optimize flows.
@@ -399,8 +403,7 @@ Each version response includes:
 
 ### Optimize
 
-- `POST /optimize/greaterprompt`
-- `POST /optimize/llm`
+- `POST /optimize`
 - `GET /optimize/config`
 - `PUT /optimize/config`
 - `GET /optimize/providers/{provider}/models`
@@ -435,12 +438,13 @@ mypy .
 
 ## Load Testing
 
-This project includes repeatable load testing based on Locust and CSV-based chart generation.
+This project includes repeatable load testing based on Locust and manifest-backed chart generation.
+The harness now benchmarks four paths: the general mixed workload, a cache-heavy workload that repeatedly hits shared prompt-read and optimization-cache paths, a dedicated hot optimization workload, and a cold optimization workload that intentionally bypasses the optimization cache.
 
 ### Run benchmark
 
 ```powershell
-python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 30s --users 10 20 40 --spawn-rate 10
+python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 15s --users 10 20 40 --spawn-rate 10 --scenarios mixed cache optimize_hot optimize_cold --clean
 ```
 
 ### Build charts
@@ -449,7 +453,42 @@ python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 30s --
 python loadtests/generate_charts.py
 ```
 
-Charts are built from aggregated rows in `loadtests/results/**/u*_stats.csv` and written to `loadtests/`.
+Charts are written to `loadtests/`.
+When `loadtests/results/benchmark_manifest.json` exists, chart generation uses the manifest results directly, so stale CSVs and setup traffic do not pollute focused scenario graphs.
+
+### Latest benchmark snapshot
+
+Local benchmark snapshot (`15s`, `10/20/40` users, shared auth token, default thresholds `failure<=1%`, `p95<=500ms`):
+
+| Scenario | Users | RPS | P95 (ms) | Avg (ms) | Failure % | Pass |
+| --- | ---: | ---: | ---: | ---: | ---: | :---: |
+| mixed | 10 | 24.17 | 1000.00 | 158.50 | 0.00 | no |
+| mixed | 20 | 13.38 | 4600.00 | 1075.67 | 0.00 | no |
+| mixed | 40 | 10.71 | 1000.00 | 104.25 | 0.00 | no |
+| cache | 10 | 97.51 | 31.00 | 13.23 | 0.00 | yes |
+| cache | 20 | 162.20 | 58.00 | 27.94 | 0.00 | yes |
+| cache | 40 | 174.15 | 160.00 | 104.27 | 0.00 | yes |
+| optimize_hot | 10 | 19.75 | 37.00 | 13.40 | 0.00 | yes |
+| optimize_hot | 20 | 37.87 | 35.00 | 15.38 | 0.00 | yes |
+| optimize_hot | 40 | 68.47 | 66.00 | 25.81 | 0.00 | yes |
+| optimize_cold | 10 | 0.18 | 11000.00 | 6947.02 | 0.00 | no |
+| optimize_cold | 20 | 0.00 | inf | inf | 100.00 | no |
+| optimize_cold | 40 | 0.00 | inf | inf | 100.00 | no |
+
+Observed takeaway:
+
+- Mixed CRUD/search traffic is currently dominated by expensive optimize calls, so it misses the default p95 target even at 10 users on this local setup.
+- Cache-heavy traffic still scales best on the same host, reaching about `174.15 RPS` at 40 users with `160 ms` p95 and zero failures.
+- Dedicated hot optimization traffic reaches `19.75 RPS` at 10 users with `37 ms` p95, while dedicated cold optimization falls to `0.18 RPS` with `11 s` p95 on the same host. That is roughly a `110x` throughput gain and about a `297x` p95 reduction from cache reuse.
+- At 20 and 40 users, the cold optimize scenario did not complete any optimize requests inside the 15-second window, while the hot optimize scenario remained stable with zero failures.
+
+### Cache Impact Test
+
+The repository now includes an executable unit test that measures the cache effect directly:
+
+- `test_cached_optimization_is_faster_than_cold_optimization` in `tests/unit/test_unit_optimizer_and_crud.py`
+
+It uses a deliberately slow fake optimizer backend and asserts that repeated cache hits complete materially faster than an equivalent series of cache misses.
 
 ### Chart: Dashboard
 
@@ -460,6 +499,12 @@ Combined view for quick comparison across scenarios and user levels:
 - P95 latency
 - Average latency
 - Failure rate
+
+### Chart: Optimize Hot Vs Cold
+
+![Optimize Hot Vs Cold](loadtests/chart_optimize_compare.png)
+
+Focused view for the dedicated optimization scenarios only. This isolates repeated identical optimize calls from cache-busting optimize calls so the optimization-cache effect is visible without prompt-read traffic mixed in.
 
 ### Chart: Throughput (RPS)
 

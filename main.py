@@ -20,11 +20,19 @@ import auth_service
 import crud
 from database import SessionLocal, init_database
 from models import Prompt, User
+from shared_cache import (
+    PROMPT_CACHE_PREFIX,
+    PROMPT_CACHE_TTL_SECONDS,
+    build_prompt_collection_cache_key,
+    build_prompt_response_cache_key,
+    cache_get_or_set,
+    clear_shared_cache,
+    delete_shared_cache_entry,
+)
 from optimizer_service import (
     build_optimizer_config,
-    list_available_llm_models,
-    optimize_with_greaterprompt,
-    optimize_with_llm,
+    list_available_models,
+    optimize_prompt_with_active_backend,
 )
 from schemas import (
     AuthResponse,
@@ -95,10 +103,10 @@ def _console_log_format(record: dict) -> str:
     elif message.startswith("request.error") or message.startswith("request.exception"):
         badge = "<red>HTTP ERR</red>"
         message_color = "<red>"
-    elif message.startswith("optimize.greaterprompt") or message.startswith("optimize.gradient"):
+    elif message.startswith("optimize.gradient"):
         badge = "<magenta>GP      </magenta>"
         message_color = "<magenta>"
-    elif message.startswith("optimize.llm"):
+    elif message.startswith("optimize.provider"):
         badge = "<yellow>LLM     </yellow>"
         message_color = "<yellow>"
     elif message.startswith("optimize.config"):
@@ -270,6 +278,11 @@ def to_prompt_out(db: Session, prompt: Prompt) -> PromptOut:
         output_format=latest.output_format,
         examples=latest.examples,
     )
+
+
+def _invalidate_prompt_cache(project: str, name: str) -> None:
+    delete_shared_cache_entry(build_prompt_response_cache_key(project, name))
+    clear_shared_cache(PROMPT_CACHE_PREFIX)
 
 
 def to_prompt_version_out(db: Session, version) -> PromptVersionOut:  # type: ignore[no-untyped-def]
@@ -458,8 +471,21 @@ def search_prompts(
 ) -> list[PromptOut]:
     if project is not None:
         auth_service.ensure_project_access(current_user, project)
-    prompts = crud.search_prompts_by_tags(db, tags=tags, mode=mode, project=project, allowed_projects=allowed_projects(current_user))
-    return [to_prompt_out(db, p) for p in prompts]
+    user_allowed_projects = allowed_projects(current_user)
+    cache_key = build_prompt_collection_cache_key(
+        route="prompts.search",
+        project=project,
+        tags=tags,
+        mode=mode,
+        allowed_projects=user_allowed_projects,
+    )
+
+    def _load_search() -> list[dict[str, object]]:
+        prompts = crud.search_prompts_by_tags(db, tags=tags, mode=mode, project=project, allowed_projects=user_allowed_projects)
+        return [to_prompt_out(db, p).model_dump(mode="json") for p in prompts]
+
+    cached_prompts = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_search)
+    return [PromptOut(**prompt) for prompt in cached_prompts]
 
 
 @app.get("/prompts", response_model=list[PromptOut])
@@ -493,10 +519,27 @@ def list_prompts(
     
     if project is not None:
         auth_service.ensure_project_access(current_user, project)
-    total_count = crud.count_prompts(db, project=project, tag=tag, allowed_projects=allowed_projects(current_user))
-    response.headers["X-Total-Count"] = str(total_count)
-    prompts = crud.list_prompts(db, project=project, tag=tag, limit=limit_int, offset=offset_int, allowed_projects=allowed_projects(current_user))
-    return [to_prompt_out(db, prompt) for prompt in prompts]
+    user_allowed_projects = allowed_projects(current_user)
+    cache_key = build_prompt_collection_cache_key(
+        route="prompts.list",
+        project=project,
+        tag=tag,
+        limit=limit_int,
+        offset=offset_int,
+        allowed_projects=user_allowed_projects,
+    )
+
+    def _load_list() -> dict[str, object]:
+        total_count = crud.count_prompts(db, project=project, tag=tag, allowed_projects=user_allowed_projects)
+        prompts = crud.list_prompts(db, project=project, tag=tag, limit=limit_int, offset=offset_int, allowed_projects=user_allowed_projects)
+        return {
+            "total_count": total_count,
+            "prompts": [to_prompt_out(db, prompt).model_dump(mode="json") for prompt in prompts],
+        }
+
+    cached_list = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_list)
+    response.headers["X-Total-Count"] = str(int(cached_list.get("total_count", 0)))
+    return [PromptOut(**prompt) for prompt in cached_list.get("prompts", [])]
 
 
 @app.post("/prompts", response_model=PromptOut)
@@ -525,17 +568,23 @@ def create_prompt(data: PromptCreate, db: Session = Depends(get_db), current_use
     except ValueError as exc:
         logger.warning("prompt.create.duplicate_content name={} project={}", data.name, data.project)
         raise HTTPException(409, str(exc)) from exc
+    _invalidate_prompt_cache(data.project, data.name)
     return to_prompt_out(db, prompt)
 
 
 @app.get("/prompts/{project}/{name}", response_model=PromptOut)
 def get_prompt(project: str, name: str, db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptOut:
     auth_service.ensure_project_access(current_user, project)
-    prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-    if not prompt:
-        raise HTTPException(404, "Prompt not found")
+    cache_key = build_prompt_response_cache_key(project, name)
 
-    return to_prompt_out(db, prompt)
+    def _load_prompt() -> dict[str, object]:
+        prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
+        if not prompt:
+            raise HTTPException(404, "Prompt not found")
+        return to_prompt_out(db, prompt).model_dump(mode="json")
+
+    cached_prompt = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_prompt)
+    return PromptOut(**cached_prompt)
 
 
 @app.delete("/prompts/{project}/{name}", status_code=204)
@@ -548,6 +597,7 @@ def delete_prompt(project: str, name: str, db: Session = Depends(get_db), curren
         raise HTTPException(404, "Prompt not found")
 
     crud.delete_prompt(db, prompt)
+    _invalidate_prompt_cache(project, name)
     return Response(status_code=204)
 
 
@@ -578,6 +628,7 @@ def update_prompt(project: str, name: str, data: PromptUpdate, db: Session = Dep
     except ValueError as exc:
         logger.warning("prompt.update.conflict project={} name={} error={}", project, name, str(exc))
         raise HTTPException(409, str(exc)) from exc
+    _invalidate_prompt_cache(project, name)
     return to_prompt_version_out(db, new_version)
 
 
@@ -589,6 +640,7 @@ def update_prompt_tags(project: str, name: str, data: PromptTagsUpdate, db: Sess
         raise HTTPException(404, "Prompt not found")
 
     crud.set_prompt_tags(db, prompt, data.tags, actor_id=current_user.id)
+    _invalidate_prompt_cache(project, name)
     # Reload prompt from database to ensure all relationships are properly populated
     prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
     if not prompt:
@@ -599,33 +651,45 @@ def update_prompt_tags(project: str, name: str, data: PromptTagsUpdate, db: Sess
 @app.get("/prompts/{project}/{name}/versions", response_model=list[PromptVersionOut])
 def list_versions(project: str, name: str, db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> list[PromptVersionOut]:
     auth_service.ensure_project_access(current_user, project)
-    prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-    if not prompt:
-        raise HTTPException(404, "Prompt not found")
+    cache_key = build_prompt_collection_cache_key(route="prompts.versions", project=project, name=name)
 
-    versions = crud.list_versions(db, prompt.id)
-    return [to_prompt_version_out(db, v) for v in versions]
+    def _load_versions() -> list[dict[str, object]]:
+        prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
+        if not prompt:
+            raise HTTPException(404, "Prompt not found")
+
+        versions = crud.list_versions(db, prompt.id)
+        return [to_prompt_version_out(db, version).model_dump(mode="json") for version in versions]
+
+    cached_versions = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_versions)
+    return [PromptVersionOut(**version) for version in cached_versions]
 
 
 @app.get("/prompts/{project}/{name}/versions/{version}", response_model=PromptVersionOut)
 def get_version(project: str, name: str, version: int, db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptVersionOut:
     auth_service.ensure_project_access(current_user, project)
-    prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-    if not prompt:
-        raise HTTPException(404, "Prompt not found")
+    cache_key = build_prompt_collection_cache_key(route="prompts.version", project=project, name=name, version=version)
 
-    v = crud.get_specific_version(db, prompt.id, version)
-    if not v:
-        raise HTTPException(404, "Version not found")
+    def _load_version() -> dict[str, object]:
+        prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
+        if not prompt:
+            raise HTTPException(404, "Prompt not found")
 
-    return to_prompt_version_out(db, v)
+        v = crud.get_specific_version(db, prompt.id, version)
+        if not v:
+            raise HTTPException(404, "Version not found")
+
+        return to_prompt_version_out(db, v).model_dump(mode="json")
+
+    cached_version = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_version)
+    return PromptVersionOut(**cached_version)
 
 
-@app.post("/optimize/greaterprompt", response_model=PromptOptimizeResponse)
+@app.post("/optimize", response_model=PromptOptimizeResponse)
 def optimize_prompt(data: PromptData, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOptimizeResponse:
-    logger.info("optimize.greaterprompt.start")
-    result = optimize_with_greaterprompt(data.model_dump(), get_personal_config(db, current_user))
-    logger.info("optimize.greaterprompt.done engine={}", result.engine)
+    logger.info("optimize.request.start")
+    result = optimize_prompt_with_active_backend(data.model_dump(), get_personal_config(db, current_user))
+    logger.info("optimize.request.done engine={}", result.engine)
     optimized_dict = result.optimized_fields
     if not isinstance(optimized_dict, dict):
         optimized_dict = {}
@@ -642,30 +706,7 @@ def optimize_prompt(data: PromptData, db: Session = Depends(get_db), current_use
         optimized=optimized,
         optimized_markdown=result.optimized_markdown,
         notes=result.notes,
-    )
-
-
-@app.post("/optimize/llm", response_model=PromptOptimizeResponse)
-def optimize_prompt_llm(data: PromptData, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOptimizeResponse:
-    logger.info("optimize.llm.start")
-    result = optimize_with_llm(data.model_dump(), get_personal_config(db, current_user))
-    logger.info("optimize.llm.done engine={}", result.engine)
-    optimized_dict = result.optimized_fields
-    if not isinstance(optimized_dict, dict):
-        optimized_dict = {}
-    optimized = PromptData(
-        role=optimized_dict.get("role"),
-        task=optimized_dict.get("task") or "",
-        context=optimized_dict.get("context"),
-        constraints=optimized_dict.get("constraints"),
-        output_format=optimized_dict.get("output_format"),
-        examples=optimized_dict.get("examples"),
-    )
-    return PromptOptimizeResponse(
-        engine=result.engine,
-        optimized=optimized,
-        optimized_markdown=result.optimized_markdown,
-        notes=result.notes,
+        elapsed_seconds=result.elapsed_seconds,
     )
 
 
@@ -673,9 +714,8 @@ def optimize_prompt_llm(data: PromptData, db: Session = Depends(get_db), current
 def get_optimize_config(db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> OptimizeConfigOut:
     cfg = get_personal_config(db, current_user)
     logger.info(
-        "optimize.config.get effective_model_id={} effective_gp_profile={} effective_llm_model={}",
-        cfg.get("effective_model_id"),
-        cfg.get("effective_gp_profile"),
+        "optimize.config.get effective_llm_provider={} effective_llm_model={}",
+        cfg.get("effective_llm_provider"),
         cfg.get("effective_llm_model"),
     )
     return OptimizeConfigOut(**cfg)
@@ -684,12 +724,9 @@ def get_optimize_config(db: Session = Depends(get_db), current_user: User = Depe
 @app.put("/optimize/config", response_model=OptimizeConfigOut)
 def update_optimize_config(data: OptimizeConfigUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> OptimizeConfigOut:
     logger.info(
-        "optimize.config.update clear_model_id={} model_id={} gp_profile={} llm_model={} rounds={}",
-        data.clear_model_id,
-        data.model_id,
-        data.gp_profile,
+        "optimize.config.update llm_provider={} llm_model={}",
+        data.llm_provider,
         data.llm_model,
-        data.rounds,
     )
     cfg = auth_service.update_personal_config(db, current_user, data.model_dump())
     return OptimizeConfigOut(**cfg)
@@ -704,7 +741,8 @@ def get_provider_models(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth_service.get_current_user),
 ) -> list[str]:
-    models = list_available_llm_models(
+    logger.info("optimize.provider.models provider={}", provider)
+    models = list_available_models(
         provider,
         base_url=base_url,
         timeout_seconds=timeout_seconds,

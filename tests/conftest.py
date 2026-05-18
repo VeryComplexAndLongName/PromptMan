@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 import auth_service
 import main
+from shared_cache import clear_shared_cache
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -17,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from database import Base
 from main import app, get_db
-from optimizer_service import clear_runtime_model_id, set_runtime_optimizer_config
+from optimizer_service import set_runtime_optimizer_config
 
 
 @pytest.fixture(scope="session")
@@ -77,16 +78,20 @@ def client(db_session: Session) -> Iterator[TestClient]:
 
 @pytest.fixture(autouse=True)
 def reset_runtime_optimizer_config() -> Iterator[None]:
-    clear_runtime_model_id()
     set_runtime_optimizer_config(
-        rounds=2,
-        gp_profile="fast",
         llm_provider="ollama",
         llm_model="qwen2.5:0.5b",
         llm_base_url="http://127.0.0.1:11434",
         llm_timeout_seconds=300,
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def reset_shared_cache() -> Iterator[None]:
+    clear_shared_cache()
+    yield
+    clear_shared_cache()
 
 
 @pytest.fixture
