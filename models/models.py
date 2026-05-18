@@ -75,6 +75,7 @@ class User(Base):
     password_hash_encrypted: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]
     role_id: Mapped[int] = Column(Integer, ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False, index=True)  # type: ignore[assignment]
     is_active: Mapped[bool] = Column(Boolean, nullable=False, default=True)  # type: ignore[assignment]
+    password_changed_at: Mapped[DateTime | None] = Column(DateTime(timezone=True), nullable=True)  # type: ignore[assignment]
 
     role_ref: Mapped["Role"] = relationship("Role", back_populates="users")
     config: Mapped["Config | None"] = relationship("Config", back_populates="user", cascade="all, delete-orphan", uselist=False)

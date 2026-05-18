@@ -1,27 +1,10 @@
-from datetime import datetime, timezone
-
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
-from models import Config, Project, ProjectAccess, Prompt, PromptVersion, Role, Tag, User
+from models import Project, Prompt, PromptVersion, Tag
 
-DEFAULT_ROLE_NAMES = ("admin", "developer", "viewer")
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def get_default_admin_user(db: Session) -> User | None:
-    return get_user_by_username(db, "admin")
-
-
-def resolve_audit_username(db: Session, user: User | None) -> str:
-    if user and user.username:
-        return user.username
-    admin_user = get_default_admin_user(db)
-    return admin_user.username if admin_user else "admin"
+from .common import _utcnow, normalize_project_name, normalize_tags
+from .project import get_or_create_project, get_or_create_tags
 
 
 def has_duplicate_prompt_version_content(
@@ -49,131 +32,6 @@ def has_duplicate_prompt_version_content(
         query = query.filter(column.is_(None)) if value is None else query.filter(column == value)
 
     return bool(db.query(query.exists()).scalar())
-
-
-def normalize_tags(tags: list[str] | None) -> list[str]:
-    if not tags:
-        return []
-    return sorted({tag.strip().lower() for tag in tags if tag and tag.strip()})
-
-
-def normalize_project_name(project: str) -> str:
-    return project.strip()
-
-
-def get_project_by_name(db: Session, name: str) -> Project | None:
-    normalized_name = normalize_project_name(name)
-    if not normalized_name:
-        return None
-    return db.query(Project).filter(func.lower(Project.name) == normalized_name.lower()).first()
-
-
-def get_project_by_id(db: Session, project_id: int) -> Project | None:
-    return db.query(Project).filter(Project.id == project_id).first()
-
-
-def list_roles(db: Session) -> list[Role]:
-    return list(db.query(Role).order_by(Role.name.asc()).all())
-
-
-def get_role_by_name(db: Session, name: str) -> Role | None:
-    normalized_name = (name or "").strip().lower()
-    if not normalized_name:
-        return None
-    return db.query(Role).filter(func.lower(Role.name) == normalized_name).first()
-
-
-def ensure_default_roles(db: Session) -> list[Role]:
-    existing = db.query(Role).filter(Role.name.in_(DEFAULT_ROLE_NAMES)).all()
-    existing_names = {role.name for role in existing}
-    for role_name in DEFAULT_ROLE_NAMES:
-        if role_name not in existing_names:
-            db.add(Role(name=role_name))
-    db.commit()
-    return list_roles(db)
-
-
-def list_projects(db: Session) -> list[Project]:
-    return list(db.query(Project).order_by(Project.name.asc()).all())
-
-
-def create_project(db: Session, name: str) -> Project:
-    normalized_name = normalize_project_name(name)
-    existing = get_project_by_name(db, normalized_name)
-    if existing:
-        raise ValueError("Project already exists")
-    project = Project(name=normalized_name)
-    db.add(project)
-    db.commit()
-    db.refresh(project)
-    return project
-
-
-def update_project(db: Session, project: Project, *, name: str) -> Project:
-    normalized_name = normalize_project_name(name)
-    existing = get_project_by_name(db, normalized_name)
-    if existing and existing.id != project.id:
-        raise ValueError("Project already exists")
-    project.name = normalized_name
-    db.add(project)
-    db.commit()
-    db.refresh(project)
-    return project
-
-
-def delete_project(db: Session, project: Project) -> None:
-    db.delete(project)
-    db.commit()
-
-
-def get_or_create_project(db: Session, name: str) -> Project:
-    normalized_name = normalize_project_name(name)
-    existing = get_project_by_name(db, normalized_name)
-    if existing:
-        return existing
-    project = Project(name=normalized_name)
-    db.add(project)
-    db.flush()
-    return project
-
-
-def get_or_create_projects(db: Session, names: list[str]) -> list[Project]:
-    normalized_names = sorted({normalize_project_name(name) for name in names if name and normalize_project_name(name)})
-    if not normalized_names:
-        return []
-
-    existing = db.query(Project).filter(Project.name.in_(normalized_names)).all()
-    existing_names = {project.name for project in existing}
-    new_projects = [Project(name=name) for name in normalized_names if name not in existing_names]
-    if new_projects:
-        db.add_all(new_projects)
-        db.flush()
-    return [*existing, *new_projects]
-
-
-def get_or_create_tags(db: Session, tags: list[str]) -> list[Tag]:
-    if not tags:
-        return []
-
-    normalized_tags = sorted(set(tags))
-    existing = db.query(Tag).filter(Tag.name.in_(normalized_tags)).all()
-    by_name = {tag.name: tag for tag in existing}
-
-    for tag_name in normalized_tags:
-        if tag_name in by_name:
-            continue
-        tag = Tag(name=tag_name)
-        try:
-            with db.begin_nested():
-                db.add(tag)
-                db.flush()
-            by_name[tag_name] = tag
-        except IntegrityError:
-            existing_tag = db.query(Tag).filter(Tag.name == tag_name).first()
-            if existing_tag:
-                by_name[tag_name] = existing_tag
-
-    return [by_name[tag_name] for tag_name in normalized_tags if tag_name in by_name]
 
 
 def create_prompt(
@@ -435,7 +293,6 @@ def search_prompts_by_tags(
         query = query.filter(Project.name == normalize_project_name(project))
 
     if mode == "and":
-        # Prompt must have every requested tag: count distinct matching tags == len(normalized)
         subq = (
             db.query(Prompt.id)
             .join(Prompt.tags)
@@ -450,107 +307,3 @@ def search_prompts_by_tags(
 
     results = query.order_by(Project.name.asc(), Prompt.name.asc()).all()
     return list(results) if results else []
-
-
-def list_users(db: Session) -> list[User]:
-    return list(
-        db.query(User)
-        .options(joinedload(User.role_ref), joinedload(User.project_access).joinedload(ProjectAccess.project_ref))
-        .order_by(User.username.asc())
-        .all()
-    )
-
-
-def get_user_by_username(db: Session, username: str) -> User | None:
-    return (
-        db.query(User)
-        .options(joinedload(User.role_ref), joinedload(User.project_access).joinedload(ProjectAccess.project_ref))
-        .filter(func.lower(User.username) == username.strip().lower())
-        .first()
-    )
-
-
-def get_user_by_id(db: Session, user_id: int) -> User | None:
-    return (
-        db.query(User)
-        .options(joinedload(User.role_ref), joinedload(User.project_access).joinedload(ProjectAccess.project_ref))
-        .filter(User.id == user_id)
-        .first()
-    )
-
-
-def get_or_create_user_config(db: Session, user_id: int) -> Config:
-    config = db.query(Config).filter(Config.user_id == user_id).first()
-    if config:
-        return config
-    config = Config(user_id=user_id)
-    db.add(config)
-    db.commit()
-    db.refresh(config)
-    return config
-
-
-def set_user_projects(db: Session, user: User, projects: list[str] | None) -> User:
-    db_projects = get_or_create_projects(db, projects or [])
-    user.project_access.clear()
-    for project in sorted(db_projects, key=lambda item: item.name.lower()):
-        user.project_access.append(ProjectAccess(project_ref=project))
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    return user
-
-
-def create_user(
-    db: Session,
-    *,
-    username: str,
-    password_hash_encrypted: str,
-    role: str,
-    is_active: bool,
-    projects: list[str] | None = None,
-) -> User:
-    role_record = get_role_by_name(db, role)
-    if role_record is None:
-        raise ValueError("Invalid role")
-    user = User(username=username.strip(), password_hash_encrypted=password_hash_encrypted, role_ref=role_record, is_active=is_active)
-    db.add(user)
-    db.flush()
-    db.add(Config(user_id=user.id))
-    db.commit()
-    db.refresh(user)
-    return set_user_projects(db, user, projects)
-
-
-def update_user(
-    db: Session,
-    user: User,
-    *,
-    username: str | None = None,
-    password_hash_encrypted: str | None = None,
-    role: str | None = None,
-    is_active: bool | None = None,
-    projects: list[str] | None = None,
-) -> User:
-    if username is not None:
-        user.username = username.strip()
-    if password_hash_encrypted is not None:
-        user.password_hash_encrypted = password_hash_encrypted
-    if role is not None:
-        role_record = get_role_by_name(db, role)
-        if role_record is None:
-            raise ValueError("Invalid role")
-        user.role_ref = role_record
-    if is_active is not None:
-        user.is_active = is_active
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    if projects is not None:
-        return set_user_projects(db, user, projects)
-    return user
-
-
-def delete_user(db: Session, user: User) -> None:
-    db.delete(user)
-    db.commit()

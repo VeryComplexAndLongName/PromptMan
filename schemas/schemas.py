@@ -145,6 +145,11 @@ class UserUpdate(BaseModel):
     projects: list[RequiredPromptText] | None = None
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: RequiredPromptText
+    new_password: RequiredPromptText
+
+
 class UserOut(BaseModel):
     id: int
     username: str

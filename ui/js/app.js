@@ -163,6 +163,11 @@ createApp({
     const editingUserId = ref(null);
     const editUserForm = ref(emptyUserForm());
 
+    /* change password */
+    const changePasswordForm = ref({ current_password: "", new_password: "", confirm_password: "" });
+    const changePasswordStatus = ref("");
+    const changePasswordBusy = ref(false);
+
     const isAuthenticated = computed(() => !!currentUser.value);
     const isAdmin = computed(() => currentUser.value?.role === "admin");
     const isViewer = computed(() => currentUser.value?.role === "viewer");
@@ -1225,6 +1230,40 @@ createApp({
       saveStatus.value = "Version saved";
     };
 
+    const changeOwnPassword = async () => {
+      changePasswordStatus.value = "";
+      const form = changePasswordForm.value;
+      if (!form.current_password || !form.new_password) {
+        changePasswordStatus.value = "error:All fields are required.";
+        return;
+      }
+      if (form.new_password !== form.confirm_password) {
+        changePasswordStatus.value = "error:New passwords do not match.";
+        return;
+      }
+      changePasswordBusy.value = true;
+      try {
+        const res = await apiFetch("/auth/me/password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            current_password: form.current_password,
+            new_password: form.new_password,
+          }),
+        });
+        if (!res.ok) {
+          let detail = "";
+          try { detail = (await res.json()).detail || ""; } catch (_) {}
+          changePasswordStatus.value = `error:${detail || `Failed to change password (${res.status})`}`;
+          return;
+        }
+        changePasswordForm.value = { current_password: "", new_password: "", confirm_password: "" };
+        changePasswordStatus.value = "ok:Password changed successfully.";
+      } finally {
+        changePasswordBusy.value = false;
+      }
+    };
+
     onMounted(async () => {
       countdownTimerId = window.setInterval(() => {
         clockNow.value = Date.now();
@@ -1272,6 +1311,7 @@ createApp({
       formatUtcDateTime, formatAuditLine, accessTokenCountdown, nextRefreshCountdown, nextRefreshAt, accessTokenExpiresAt,
       md, buildPromptMarkdown,
       deleteStatus,
+      changePasswordForm, changePasswordStatus, changePasswordBusy, changeOwnPassword,
     };
   },
 
@@ -1318,9 +1358,6 @@ createApp({
           <div>
             <div class="auth-banner-user">{{ currentUser.username }}</div>
             <div class="auth-banner-meta">Role: {{ currentUser.role }} | Projects: {{ currentUserProjectsLabel }}</div>
-            <div class="auth-banner-meta">Access token expires in: {{ accessTokenCountdown }} | Next refresh: {{ nextRefreshCountdown }}</div>
-            <div class="auth-banner-meta">Access token expiry at: {{ formatUtcDateTime(accessTokenExpiresAt * 1000) }}</div>
-            <div v-if="nextRefreshAt" class="auth-banner-meta">Next scheduled refresh at: {{ formatUtcDateTime(nextRefreshAt * 1000) }}</div>
           </div>
           <button class="ghost" @click="logout">Logout</button>
         </div>
@@ -1332,6 +1369,7 @@ createApp({
       <button v-if="canWrite" class="tab-btn" :class="{active: activeTab==='create'}" @click="activeTab='create'">+ Create</button>
       <button class="tab-btn" :class="{active: activeTab==='config'}" @click="activeTab='config'">Config</button>
       <button v-if="canViewAdmin" class="tab-btn" :class="{active: activeTab==='admin'}" @click="activeTab='admin'">Admin</button>
+      <button class="tab-btn" :class="{active: activeTab==='account'}" @click="activeTab='account'">Account</button>
     </div>
 
     <!-- BROWSE TAB -->
@@ -1796,6 +1834,34 @@ createApp({
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- ACCOUNT TAB -->
+    <div class="tab-panel" v-if="activeTab==='account'">
+      <h2 style="margin-top:0">Change Password</h2>
+      <p style="color:var(--muted);margin-bottom:1.2rem">You may change your password at most once every 30 minutes.</p>
+      <div style="max-width:420px">
+        <div class="field">
+          <label>Current Password</label>
+          <input type="password" v-model="changePasswordForm.current_password" placeholder="Current password" />
+        </div>
+        <div class="field">
+          <label>New Password</label>
+          <input type="password" v-model="changePasswordForm.new_password" placeholder="New password" />
+        </div>
+        <div class="field">
+          <label>Confirm New Password</label>
+          <input type="password" v-model="changePasswordForm.confirm_password" placeholder="Repeat new password" @keyup.enter="changeOwnPassword" />
+        </div>
+        <div class="btn-row" style="margin-top:0.8rem">
+          <button @click="changeOwnPassword"
+            :disabled="changePasswordBusy || !changePasswordForm.current_password || !changePasswordForm.new_password || !changePasswordForm.confirm_password">
+            {{ changePasswordBusy ? 'Saving…' : 'Change Password' }}
+          </button>
+        </div>
+        <p v-if="changePasswordStatus" :class="changePasswordStatus.startsWith('ok:') ? 'status-ok' : 'status-err'"
+          style="margin-top:0.7rem">{{ changePasswordStatus.replace(/^(ok:|error:)/,'') }}</p>
       </div>
     </div>
 

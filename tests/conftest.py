@@ -8,9 +8,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-import auth_service
+import auth as auth_service
 import main
-from shared_cache import clear_shared_cache
+from cache.shared_cache import clear_shared_cache
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from database import Base
 from main import app, get_db
-from optimizer_service import set_runtime_optimizer_config
+from optimizer.service import set_runtime_optimizer_config
 
 
 @pytest.fixture(scope="session")
