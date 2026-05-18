@@ -136,6 +136,7 @@ createApp({
     const optimizerLogs = ref([]);
     const optimizerEngine = ref("");
     const optimizerNotes = ref([]);
+    const optimizerElapsedSeconds = ref(null);
     const optimizedMarkdown = ref("");
     const optimizedDraft = ref(emptyPromptData());
     const optimizeInputSource = ref("create");
@@ -167,6 +168,21 @@ createApp({
     const isViewer = computed(() => currentUser.value?.role === "viewer");
     const canViewAdmin = computed(() => currentUser.value?.role === "admin");
     const canWrite = computed(() => !!currentUser.value && currentUser.value.role !== "viewer");
+    const optimizerTimeoutSeconds = computed(() =>
+      Number(optimizeConfig.value.effective_llm_timeout_seconds || optimizeConfig.value.llm_timeout_seconds || 0)
+    );
+    const optimizerElapsedPercent = computed(() => {
+      if (optimizerElapsedSeconds.value === null || optimizerTimeoutSeconds.value <= 0) {
+        return null;
+      }
+      return (optimizerElapsedSeconds.value / optimizerTimeoutSeconds.value) * 100;
+    });
+    const optimizerElapsedSeverity = computed(() => {
+      if (optimizerElapsedPercent.value === null) return "ok";
+      if (optimizerElapsedPercent.value >= 100) return "error";
+      if (optimizerElapsedPercent.value >= 80) return "warn";
+      return "ok";
+    });
     const availableProjectNames = computed(() => projects.value.map((project) => project.name));
     const currentUserProjectsLabel = computed(() => {
       if (!currentUser.value) return "";
@@ -1009,6 +1025,7 @@ createApp({
       optimizerStatus.value = "Optimization started";
       optimizerEngine.value = "";
       optimizerNotes.value = [];
+      optimizerElapsedSeconds.value = null;
       optimizerLogs.value = [];
       optimizedMarkdown.value = "";
       optimizeEndpoint.value = endpoint;
@@ -1036,19 +1053,32 @@ createApp({
       pushOptimizerLog(`Sending request to ${endpoint} ...`);
 
       let res;
+      const optimizeTimeoutSeconds = Number(
+        optimizeConfig.value.effective_llm_timeout_seconds || optimizeConfig.value.llm_timeout_seconds || 300
+      );
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), Math.max(5000, optimizeTimeoutSeconds * 1000 + 10000));
       try {
         res = await apiFetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(promptPayload(fields)),
+          signal: controller.signal,
         });
       } catch (err) {
+        window.clearTimeout(timeoutId);
         optimizerLoading.value = false;
         optimizerStatus.value = "Optimization failed";
-        optimizerError.value = "Optimization request failed before response.";
-        pushOptimizerLog("Request failed: network/server error.", "error");
+        if (err && err.name === "AbortError") {
+          optimizerError.value = `Optimization timed out after ${optimizeTimeoutSeconds}s.`;
+          pushOptimizerLog(`Request aborted after ${optimizeTimeoutSeconds}s timeout.`, "error");
+        } else {
+          optimizerError.value = "Optimization request failed before response.";
+          pushOptimizerLog("Request failed: network/server error.", "error");
+        }
         return;
       }
+      window.clearTimeout(timeoutId);
 
       if (!res.ok) {
         optimizerLoading.value = false;
@@ -1083,11 +1113,15 @@ createApp({
       optimizerLoading.value = false;
       optimizerEngine.value = data.engine || "optimizer";
       optimizerNotes.value = data.notes || [];
+      optimizerElapsedSeconds.value = Number.isFinite(Number(data.elapsed_seconds)) ? Number(data.elapsed_seconds) : null;
       optimizerStatus.value = optimizerEngine.value.includes("fallback")
         ? "Optimization finished with fallback"
         : "Optimization completed";
 
       pushOptimizerLog(`Completed. Engine: ${optimizerEngine.value}.`, optimizerEngine.value.includes("fallback") ? "warn" : "success");
+      if (optimizerElapsedSeconds.value !== null) {
+        pushOptimizerLog(`Backend elapsed: ${optimizerElapsedSeconds.value.toFixed(2)}s.`);
+      }
       if (Array.isArray(optimizerNotes.value) && optimizerNotes.value.length) {
         optimizerNotes.value.forEach((note) => {
           const level = String(note || "").toLowerCase().includes("failed") ? "warn" : "info";
@@ -1220,7 +1254,8 @@ createApp({
       editTagsMode, editTagsStr, newVersionRole, newVersionTask, newVersionContext, newVersionConstraints, newVersionOutputFormat, newVersionExamples, saveStatus,
       newVersionEditorOpen,
       createOptimizeMenuOpen, browseOptimizeMenuKey,
-      optimizerModalOpen, optimizerLoading, optimizerError, optimizerStatus, optimizerMode, optimizerLogs, optimizerEngine, optimizerNotes,
+      optimizerModalOpen, optimizerLoading, optimizerError, optimizerStatus, optimizerMode, optimizerLogs, optimizerEngine, optimizerNotes, optimizerElapsedSeconds,
+      optimizerElapsedPercent, optimizerElapsedSeverity,
       optimizedMarkdown, optimizedDraft,
       optimizeConfig, optimizeConfigStatus, llmProviderOptions, availableLlmModels, llmModelsLoading, llmModelsLoadError,
       roleOptions, projects, projectsLoading, projectsStatus, newProjectForm, editingProjectId, editProjectForm,
@@ -1793,12 +1828,22 @@ createApp({
         <div v-if="!optimizerLoading">
           <p style="margin:0 0 8px;color:var(--muted)">Mode: Backend</p>
           <p style="margin:0 0 8px;color:var(--muted)">Engine: {{ optimizerEngine }}</p>
+          <p v-if="optimizerElapsedSeconds !== null" class="optimizer-elapsed" :class="'elapsed-' + optimizerElapsedSeverity">
+            Backend elapsed: {{ optimizerElapsedSeconds.toFixed(2) }}s
+            <span v-if="optimizerElapsedPercent !== null">({{ optimizerElapsedPercent.toFixed(1) }}% of timeout)</span>
+          </p>
           <p style="margin:0 0 10px;color:var(--muted);font-size:0.9rem">
             Active profile: {{ optimizeConfig.effective_gp_profile }} | Active model: {{ optimizeConfig.effective_llm_model }} | Active provider: {{ optimizeConfig.effective_llm_provider }} | Timeout: {{ optimizeConfig.effective_llm_timeout_seconds }}s
           </p>
 
-          <div class="chips" v-if="optimizerNotes.length">
-            <span class="chip" v-for="(note, idx) in optimizerNotes" :key="idx">{{ note }}</span>
+          <div class="optimizer-notes" v-if="optimizerNotes.length">
+            <div class="optimizer-notes-title">Notes (Markdown)</div>
+            <div
+              class="md-content optimizer-note"
+              v-for="(note, idx) in optimizerNotes"
+              :key="idx"
+              v-html="md(String(note || ''))"
+            ></div>
           </div>
           <div class="md-content" style="margin-top:10px" v-html="md(optimizedMarkdown || buildPromptMarkdown(optimizedDraft))"></div>
           <div class="btn-row" style="margin-top:12px" v-if="canWrite">

@@ -670,6 +670,46 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
   font-size: 1.05rem;
 }
 
+.optimizer-elapsed {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+
+.optimizer-elapsed.elapsed-ok {
+  color: var(--muted);
+}
+
+.optimizer-elapsed.elapsed-warn {
+  color: #8a3f27;
+  font-weight: 600;
+}
+
+.optimizer-elapsed.elapsed-error {
+  color: var(--err);
+  font-weight: 700;
+}
+
+.optimizer-notes {
+  margin: 8px 0 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.optimizer-notes-title {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.optimizer-note {
+  margin-top: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(23,32,38,0.12);
+  border-radius: 10px;
+  background: rgba(38,102,127,0.04);
+}
+
 .opt-config-box {
   margin: 8px 0 12px;
   padding: 10px;

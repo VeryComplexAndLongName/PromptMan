@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from time import perf_counter, sleep
 
 import pytest
 from sqlalchemy import insert
@@ -8,6 +9,8 @@ from sqlalchemy.orm import sessionmaker
 
 import crud
 import auth_service
+import main
+import optimizer_service
 from database import Base, init_database
 from models import Project, Prompt, Role, Tag
 from optimizer_service import (
@@ -69,6 +72,126 @@ def test_optimize_backend_fallback_when_provider_missing_token():  # type: ignor
 
     assert "fallback" in result.engine
     assert result.optimized_fields["task"]
+
+
+def test_optimize_backend_falls_back_on_timeout(monkeypatch):  # type: ignore[no-untyped-def]
+    backend = LeoPromptOptimizerBackend()
+
+    monkeypatch.setattr(backend, "_build_provider", lambda provider, token, base_url: (object(), "openai"))
+
+    class _FakeLeoOptimizer:
+        def __init__(self, provider, default_model):  # type: ignore[no-untyped-def]
+            self.provider = provider
+            self.default_model = default_model
+
+        def optimize(self, **kwargs):  # type: ignore[no-untyped-def]
+            return "unreachable"
+
+    monkeypatch.setitem(__import__("sys").modules, "leo_prompt_optimizer", type("_M", (), {"LeoOptimizer": _FakeLeoOptimizer}))
+    monkeypatch.setattr(optimizer_service, "_run_with_timeout", lambda func, timeout_seconds, operation_name: (_ for _ in ()).throw(TimeoutError("timed out")))
+
+    cfg = optimizer_service.build_optimizer_config(
+        {
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_timeout_seconds": 5,
+        }
+    )
+    result = backend.optimize({"task": "Refine this prompt"}, cfg)
+
+    assert result.engine == "leo-fallback"
+    assert any("timed out" in str(note).lower() for note in result.notes)
+
+
+def test_optimize_result_is_cached_for_same_config(monkeypatch):  # type: ignore[no-untyped-def]
+    calls = {"count": 0}
+
+    class _FakeBackend:
+        @property
+        def name(self) -> str:
+            return "leo"
+
+        def optimize(self, fields, config):  # type: ignore[no-untyped-def]
+            calls["count"] += 1
+            return optimizer_service.OptimizationResult(
+                engine="leo-openai:gpt-4o-mini",
+                optimized_fields={"task": fields.get("task")},
+                optimized_markdown=f"Task: {fields.get('task')}",
+                notes=["cached"],
+                elapsed_seconds=1.0,
+            )
+
+        def list_models(self, provider, *, base_url=None, timeout_seconds=5, api_token=None, config_override=None):  # type: ignore[no-untyped-def]
+            return []
+
+    monkeypatch.setattr(optimizer_service, "get_active_optimizer_backend", lambda: _FakeBackend())
+
+    fields = {"task": "Refine this prompt"}
+    result1 = optimize_prompt_with_active_backend(fields)
+    result2 = optimize_prompt_with_active_backend(fields)
+
+    assert calls["count"] == 1
+    assert result1.engine == result2.engine
+    assert result1.optimized_markdown == result2.optimized_markdown
+
+
+def test_prompt_get_response_is_cached_for_same_prompt(client, sample_prompt_payload, monkeypatch):  # type: ignore[no-untyped-def]
+    client.post("/prompts", json=sample_prompt_payload)
+
+    call_count = {"count": 0}
+    original_get_prompt = main.crud.get_prompt
+
+    def counting_get_prompt(*args, **kwargs):  # type: ignore[no-untyped-def]
+        call_count["count"] += 1
+        return original_get_prompt(*args, **kwargs)
+
+    monkeypatch.setattr(main.crud, "get_prompt", counting_get_prompt)
+
+    first = client.get("/prompts/payments/checkout-system")
+    second = client.get("/prompts/payments/checkout-system")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert call_count["count"] == 1
+
+
+def test_cached_optimization_is_faster_than_cold_optimization(monkeypatch):  # type: ignore[no-untyped-def]
+    calls = {"count": 0}
+
+    class _SlowFakeBackend:
+        @property
+        def name(self) -> str:
+            return "leo"
+
+        def optimize(self, fields, config):  # type: ignore[no-untyped-def]
+            calls["count"] += 1
+            sleep(0.02)
+            return optimizer_service.OptimizationResult(
+                engine="leo-openai:gpt-4o-mini",
+                optimized_fields={"task": fields.get("task")},
+                optimized_markdown=f"Task: {fields.get('task')}",
+                notes=["timed"],
+                elapsed_seconds=0.02,
+            )
+
+        def list_models(self, provider, *, base_url=None, timeout_seconds=5, api_token=None, config_override=None):  # type: ignore[no-untyped-def]
+            return []
+
+    monkeypatch.setattr(optimizer_service, "get_active_optimizer_backend", lambda: _SlowFakeBackend())
+
+    hot_fields = {"task": "cached request"}
+    hot_start = perf_counter()
+    for _ in range(5):
+        optimize_prompt_with_active_backend(hot_fields)
+    hot_duration = perf_counter() - hot_start
+
+    cold_start = perf_counter()
+    for index in range(5):
+        optimize_prompt_with_active_backend({"task": f"cold request {index}"})
+    cold_duration = perf_counter() - cold_start
+
+    assert calls["count"] == 6
+    assert cold_duration > hot_duration * 2
 
 
 def test_openai_provider_with_ollama_base_url_is_treated_as_compat_mode():  # type: ignore[no-untyped-def]

@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 
 import auth_service
 import main
+from shared_cache import clear_shared_cache
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -84,6 +85,13 @@ def reset_runtime_optimizer_config() -> Iterator[None]:
         llm_timeout_seconds=300,
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def reset_shared_cache() -> Iterator[None]:
+    clear_shared_cache()
+    yield
+    clear_shared_cache()
 
 
 @pytest.fixture

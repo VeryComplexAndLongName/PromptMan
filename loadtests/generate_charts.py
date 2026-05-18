@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -41,6 +42,40 @@ def _parse_users(file_name: str) -> int | None:
 def _collect_points(results_root: Path) -> list[ResultPoint]:
     points: list[ResultPoint] = []
 
+    manifest_path = results_root / "benchmark_manifest.json"
+    if manifest_path.exists():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_results = payload.get("results")
+            if isinstance(manifest_results, list):
+                for item in manifest_results:
+                    if not isinstance(item, dict):
+                        continue
+                    points.append(
+                        ResultPoint(
+                            scenario=str(item.get("scenario", "")),
+                            users=int(item.get("users", 0)),
+                            rps=_safe_float(str(item.get("requests_per_s", ""))),
+                            p95_ms=_safe_float(str(item.get("p95_ms", ""))),
+                            avg_ms=_safe_float(str(item.get("avg_ms", ""))),
+                            fail_rate_pct=_safe_float(str(item.get("failure_rate", ""))) * 100.0,
+                        )
+                    )
+                if points:
+                    return points
+        except json.JSONDecodeError:
+            pass
+
+    allowed_scenarios: set[str] | None = None
+    if manifest_path.exists():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            scenarios = payload.get("scenarios")
+            if isinstance(scenarios, list):
+                allowed_scenarios = {str(item) for item in scenarios}
+        except json.JSONDecodeError:
+            allowed_scenarios = None
+
     for stats_path in sorted(results_root.rglob("u*_stats.csv")):
         users = _parse_users(stats_path.name)
         if users is None:
@@ -48,6 +83,8 @@ def _collect_points(results_root: Path) -> list[ResultPoint]:
 
         rel_parent = stats_path.parent.relative_to(results_root)
         scenario = rel_parent.as_posix() if str(rel_parent) != "." else "root"
+        if allowed_scenarios is not None and scenario not in allowed_scenarios:
+            continue
 
         with stats_path.open("r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
@@ -135,6 +172,44 @@ def _plot_dashboard(points: list[ResultPoint], output: Path) -> None:
     plt.close(fig)
 
 
+def _plot_optimize_compare(points: list[ResultPoint], output: Path) -> None:
+    optimize_points = [point for point in points if point.scenario in {"optimize_hot", "optimize_cold"}]
+    if not optimize_points:
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    metrics = [
+        ("rps", "RPS", "Optimize Throughput"),
+        ("p95_ms", "ms", "Optimize P95 Latency"),
+    ]
+
+    for ax, (metric, ylabel, title) in zip(axes, metrics, strict=True):
+        for scenario in ["optimize_hot", "optimize_cold"]:
+            subset = sorted((point for point in optimize_points if point.scenario == scenario), key=lambda item: item.users)
+            if not subset:
+                continue
+            ax.plot(
+                [point.users for point in subset],
+                [getattr(point, metric) for point in subset],
+                marker="o",
+                linewidth=2,
+                label=scenario,
+            )
+
+        ax.set_title(title)
+        ax.set_xlabel("Users")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=min(2, len(labels)))
+
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.savefig(output, dpi=150)
+    plt.close(fig)
+
+
 def main() -> int:
     loadtests_dir = Path(__file__).resolve().parent
     results_root = loadtests_dir / "results"
@@ -173,6 +248,7 @@ def main() -> int:
         output=loadtests_dir / "chart_failure_rate.png",
     )
     _plot_dashboard(points, output=loadtests_dir / "chart_dashboard.png")
+    _plot_optimize_compare(points, output=loadtests_dir / "chart_optimize_compare.png")
 
     print(f"Built charts from {len(points)} aggregated points.")
     return 0

@@ -3,14 +3,18 @@ import hashlib
 import json
 import os
 import re
+import time
+from queue import Empty, Queue
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from threading import Lock
+from threading import Lock, Thread
 from typing import Any
 
 from loguru import logger
+
+from shared_cache import OPTIMIZATION_CACHE_TTL_SECONDS, build_optimization_cache_key, cache_get_or_set
 
 _runtime_config_lock = Lock()
 
@@ -21,6 +25,14 @@ class OptimizationResult:
     optimized_fields: dict[str, str | None]
     optimized_markdown: str
     notes: list[str]
+    elapsed_seconds: float | None = None
+
+
+class BackendOperationTimeoutError(TimeoutError):
+    def __init__(self, operation_name: str, timeout_seconds: int) -> None:
+        super().__init__(f"{operation_name} exceeded {int(timeout_seconds)}s timeout")
+        self.operation_name = operation_name
+        self.timeout_seconds = int(timeout_seconds)
 
 
 class PromptOptimizerBackend(ABC):
@@ -234,6 +246,21 @@ def _extract_prefixed_section(text: str, key: str) -> str | None:
     return _normalize_text(match.group(1))
 
 
+def _build_backend_failure_note(exc: Exception, timeout_seconds: int, elapsed_seconds: float) -> str:
+    rounded_elapsed = round(max(0.0, elapsed_seconds), 2)
+    if isinstance(exc, BackendOperationTimeoutError):
+        return (
+            f"Backend optimization timed out after {exc.timeout_seconds}s "
+            f"(elapsed ~{rounded_elapsed}s, operation={exc.operation_name})."
+        )
+    if isinstance(exc, TimeoutError):
+        return (
+            f"Backend/provider reported timeout after ~{rounded_elapsed}s "
+            f"(configured timeout={int(timeout_seconds)}s): {exc}"
+        )
+    return f"Backend optimization failed after ~{rounded_elapsed}s: {exc}"
+
+
 def _parse_structured_response(raw_text: str, fallback: dict[str, str | None]) -> dict[str, str | None]:
     role = _extract_prefixed_section(raw_text, "Role") or fallback.get("role")
     task = _extract_prefixed_section(raw_text, "Task")
@@ -255,6 +282,28 @@ def _parse_structured_response(raw_text: str, fallback: dict[str, str | None]) -
             "examples": examples,
         }
     )
+
+
+def _run_with_timeout(func: Any, timeout_seconds: int, operation_name: str) -> Any:
+    result_queue: Queue[tuple[str, Any]] = Queue(maxsize=1)
+
+    def _target() -> None:
+        try:
+            result_queue.put(("ok", func()))
+        except Exception as exc:  # pragma: no cover - passthrough for worker-thread exceptions
+            result_queue.put(("error", exc))
+
+    worker = Thread(target=_target, daemon=True)
+    worker.start()
+
+    try:
+        status, payload = result_queue.get(timeout=max(1, int(timeout_seconds)))
+    except Empty as exc:
+        raise BackendOperationTimeoutError(operation_name, int(timeout_seconds)) from exc
+
+    if status == "error":
+        raise payload
+    return payload
 
 
 class LeoPromptOptimizerBackend(PromptOptimizerBackend):
@@ -356,6 +405,7 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
         model_name = config["effective_llm_model"]
         base_url = config.get("effective_llm_base_url")
         api_token = config.get("effective_llm_api_token")
+        timeout_seconds = max(5, int(config.get("effective_llm_timeout_seconds") or 120))
 
         sanitized = {
             "role": _normalize_text(fields.get("role")),
@@ -367,19 +417,25 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
         }
 
         logger.info("optimize.backend.start backend={} provider={} model={}", self.name, provider_name, model_name)
+        start_time = time.monotonic()
 
         try:
             provider, resolved_provider = self._build_provider(provider_name, api_token, base_url)
             optimizer = LeoOptimizer(provider=provider, default_model=model_name)
-            raw_result = optimizer.optimize(
-                prompt_draft=_build_full_prompt(sanitized),
-                top_instruction=(
-                    "Optimize this prompt for clarity and reliability. "
-                    "Prefer preserving structure with fields Role/Task/Context/Constraints/Output format/Examples."
+            raw_result = _run_with_timeout(
+                lambda: optimizer.optimize(
+                    prompt_draft=_build_full_prompt(sanitized),
+                    top_instruction=(
+                        "Optimize this prompt for clarity and reliability. "
+                        "Prefer preserving structure with fields Role/Task/Context/Constraints/Output format/Examples."
+                    ),
+                    model=model_name,
                 ),
-                model=model_name,
+                timeout_seconds,
+                "leo.optimize",
             )
             parsed = _parse_structured_response(raw_result or "", sanitized)
+            elapsed_seconds = time.monotonic() - start_time
             return OptimizationResult(
                 engine=f"{self.name}-{resolved_provider}:{model_name}",
                 optimized_fields=parsed,
@@ -390,6 +446,7 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
                     f"Provider: {resolved_provider}",
                     f"Model: {model_name}",
                 ],
+                elapsed_seconds=elapsed_seconds,
             )
         except Exception as exc:
             if (provider_name or "").strip().lower() == "ollama" and self._is_ollama_memory_error(exc):
@@ -411,15 +468,20 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
                         )
                         retry_provider, resolved_provider = self._build_provider(provider_name, api_token, base_url)
                         retry_optimizer = LeoOptimizer(provider=retry_provider, default_model=low_memory_model)
-                        retry_raw_result = retry_optimizer.optimize(
-                            prompt_draft=_build_full_prompt(sanitized),
-                            top_instruction=(
-                                "Optimize this prompt for clarity and reliability. "
-                                "Prefer preserving structure with fields Role/Task/Context/Constraints/Output format/Examples."
+                        retry_raw_result = _run_with_timeout(
+                            lambda: retry_optimizer.optimize(
+                                prompt_draft=_build_full_prompt(sanitized),
+                                top_instruction=(
+                                    "Optimize this prompt for clarity and reliability. "
+                                    "Prefer preserving structure with fields Role/Task/Context/Constraints/Output format/Examples."
+                                ),
+                                model=low_memory_model,
                             ),
-                            model=low_memory_model,
+                            timeout_seconds,
+                            "leo.optimize.retry_low_memory",
                         )
                         retry_parsed = _parse_structured_response(retry_raw_result or "", sanitized)
+                        elapsed_seconds = time.monotonic() - start_time
                         return OptimizationResult(
                             engine=f"{self.name}-{resolved_provider}:{low_memory_model}",
                             optimized_fields=retry_parsed,
@@ -431,20 +493,23 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
                                 f"Model: {low_memory_model}",
                                 f"Switched from {model_name} due to memory constraints.",
                             ],
+                            elapsed_seconds=elapsed_seconds,
                         )
                     except Exception as retry_exc:
                         exc = RuntimeError(f"{exc}; retry_with_low_memory_model_failed: {retry_exc}")
 
             logger.exception("optimize.backend.error backend={} provider={} model={}", self.name, provider_name, model_name)
+            elapsed_seconds = time.monotonic() - start_time
             fallback = _heuristic_improve(sanitized)
             return OptimizationResult(
                 engine=f"{self.name}-fallback",
                 optimized_fields=fallback,
                 optimized_markdown=_build_full_prompt(fallback),
                 notes=[
-                    f"Backend optimization failed: {exc}",
+                    _build_backend_failure_note(exc, timeout_seconds, elapsed_seconds),
                     "Fallback optimization was used.",
                 ],
+                elapsed_seconds=elapsed_seconds,
             )
 
     def list_models(
@@ -519,7 +584,8 @@ def get_active_optimizer_backend() -> PromptOptimizerBackend:
 def optimize_prompt_with_active_backend(fields: dict[str, str | None], config_override: dict[str, Any] | None = None) -> OptimizationResult:
     backend = get_active_optimizer_backend()
     config = build_optimizer_config(config_override)
-    return backend.optimize(fields, config)
+    cache_key = build_optimization_cache_key(fields, config, backend.name)
+    return cache_get_or_set(cache_key, OPTIMIZATION_CACHE_TTL_SECONDS, lambda: backend.optimize(fields, config))
 
 
 def list_available_models(

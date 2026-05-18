@@ -438,12 +438,13 @@ mypy .
 
 ## Load Testing
 
-This project includes repeatable load testing based on Locust and CSV-based chart generation.
+This project includes repeatable load testing based on Locust and manifest-backed chart generation.
+The harness now benchmarks four paths: the general mixed workload, a cache-heavy workload that repeatedly hits shared prompt-read and optimization-cache paths, a dedicated hot optimization workload, and a cold optimization workload that intentionally bypasses the optimization cache.
 
 ### Run benchmark
 
 ```powershell
-python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 30s --users 10 20 40 --spawn-rate 10
+python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 15s --users 10 20 40 --spawn-rate 10 --scenarios mixed cache optimize_hot optimize_cold --clean
 ```
 
 ### Build charts
@@ -452,7 +453,42 @@ python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 30s --
 python loadtests/generate_charts.py
 ```
 
-Charts are built from aggregated rows in `loadtests/results/**/u*_stats.csv` and written to `loadtests/`.
+Charts are written to `loadtests/`.
+When `loadtests/results/benchmark_manifest.json` exists, chart generation uses the manifest results directly, so stale CSVs and setup traffic do not pollute focused scenario graphs.
+
+### Latest benchmark snapshot
+
+Local benchmark snapshot (`15s`, `10/20/40` users, shared auth token, default thresholds `failure<=1%`, `p95<=500ms`):
+
+| Scenario | Users | RPS | P95 (ms) | Avg (ms) | Failure % | Pass |
+| --- | ---: | ---: | ---: | ---: | ---: | :---: |
+| mixed | 10 | 24.17 | 1000.00 | 158.50 | 0.00 | no |
+| mixed | 20 | 13.38 | 4600.00 | 1075.67 | 0.00 | no |
+| mixed | 40 | 10.71 | 1000.00 | 104.25 | 0.00 | no |
+| cache | 10 | 97.51 | 31.00 | 13.23 | 0.00 | yes |
+| cache | 20 | 162.20 | 58.00 | 27.94 | 0.00 | yes |
+| cache | 40 | 174.15 | 160.00 | 104.27 | 0.00 | yes |
+| optimize_hot | 10 | 19.75 | 37.00 | 13.40 | 0.00 | yes |
+| optimize_hot | 20 | 37.87 | 35.00 | 15.38 | 0.00 | yes |
+| optimize_hot | 40 | 68.47 | 66.00 | 25.81 | 0.00 | yes |
+| optimize_cold | 10 | 0.18 | 11000.00 | 6947.02 | 0.00 | no |
+| optimize_cold | 20 | 0.00 | inf | inf | 100.00 | no |
+| optimize_cold | 40 | 0.00 | inf | inf | 100.00 | no |
+
+Observed takeaway:
+
+- Mixed CRUD/search traffic is currently dominated by expensive optimize calls, so it misses the default p95 target even at 10 users on this local setup.
+- Cache-heavy traffic still scales best on the same host, reaching about `174.15 RPS` at 40 users with `160 ms` p95 and zero failures.
+- Dedicated hot optimization traffic reaches `19.75 RPS` at 10 users with `37 ms` p95, while dedicated cold optimization falls to `0.18 RPS` with `11 s` p95 on the same host. That is roughly a `110x` throughput gain and about a `297x` p95 reduction from cache reuse.
+- At 20 and 40 users, the cold optimize scenario did not complete any optimize requests inside the 15-second window, while the hot optimize scenario remained stable with zero failures.
+
+### Cache Impact Test
+
+The repository now includes an executable unit test that measures the cache effect directly:
+
+- `test_cached_optimization_is_faster_than_cold_optimization` in `tests/unit/test_unit_optimizer_and_crud.py`
+
+It uses a deliberately slow fake optimizer backend and asserts that repeated cache hits complete materially faster than an equivalent series of cache misses.
 
 ### Chart: Dashboard
 
@@ -463,6 +499,12 @@ Combined view for quick comparison across scenarios and user levels:
 - P95 latency
 - Average latency
 - Failure rate
+
+### Chart: Optimize Hot Vs Cold
+
+![Optimize Hot Vs Cold](loadtests/chart_optimize_compare.png)
+
+Focused view for the dedicated optimization scenarios only. This isolates repeated identical optimize calls from cache-busting optimize calls so the optimization-cache effect is visible without prompt-read traffic mixed in.
 
 ### Chart: Throughput (RPS)
 

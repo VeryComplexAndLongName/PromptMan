@@ -64,6 +64,7 @@ class PromptOptimizeResponse(BaseModel):
     optimized: PromptData
     optimized_markdown: str
     notes: list[str] = []
+    elapsed_seconds: float | None = None
 
 
 class OptimizeConfigUpdate(BaseModel):
