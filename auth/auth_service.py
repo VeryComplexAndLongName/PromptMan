@@ -1,3 +1,4 @@
+import datetime
 import os
 import time
 from typing import Any
@@ -8,8 +9,8 @@ from sqlalchemy.orm import Session
 
 import crud
 from database import SessionLocal
-from models import Config, Role, User
-from optimizer_service import build_optimizer_config, get_runtime_optimizer_config
+from models.models import Config, Role, User
+from optimizer.service import build_optimizer_config, get_runtime_optimizer_config
 from security import (
     ACCESS_TOKEN_TTL_SECONDS,
     REFRESH_TOKEN_TTL_SECONDS,
@@ -148,6 +149,41 @@ def update_user_record(
         role=normalized_role,
         is_active=is_active,
         projects=projects,
+    )
+
+
+CHANGE_PASSWORD_COOLDOWN_SECONDS = 1800  # 30 minutes
+
+
+def change_own_password(
+    db: Session,
+    user: User,
+    *,
+    current_password: str,
+    new_password: str,
+) -> None:
+    stored_hash = decrypt_secret(user.password_hash_encrypted)
+    if not verify_password(current_password, stored_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if user.password_changed_at is not None:
+        last_change = user.password_changed_at
+        if last_change.tzinfo is None:
+            last_change = last_change.replace(tzinfo=datetime.timezone.utc)
+        elapsed = (datetime.datetime.now(datetime.timezone.utc) - last_change).total_seconds()
+        remaining = int(CHANGE_PASSWORD_COOLDOWN_SECONDS - elapsed)
+        if remaining > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Password was changed recently. Please wait {remaining // 60}m {remaining % 60}s before changing again.",
+            )
+    encrypted_hash = encrypt_secret(hash_password(new_password))
+    if not encrypted_hash:
+        raise HTTPException(status_code=500, detail="Unable to encrypt password hash")
+    crud.update_user(
+        db,
+        user,
+        password_hash_encrypted=encrypted_hash,
+        password_changed_at=datetime.datetime.now(datetime.timezone.utc),
     )
 
 

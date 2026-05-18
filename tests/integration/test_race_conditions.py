@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-import auth_service
+import auth as auth_service
 import main
 from database import Base
 from main import app, get_db

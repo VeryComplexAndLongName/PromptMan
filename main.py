@@ -16,11 +16,11 @@ from loguru import logger
 from sqlalchemy.orm import Session
 from starlette.middleware.base import BaseHTTPMiddleware
 
-import auth_service
+import auth as auth_service
 import crud
 from database import SessionLocal, init_database
 from models import Prompt, User
-from shared_cache import (
+from cache.shared_cache import (
     PROMPT_CACHE_PREFIX,
     PROMPT_CACHE_TTL_SECONDS,
     build_prompt_collection_cache_key,
@@ -29,7 +29,7 @@ from shared_cache import (
     clear_shared_cache,
     delete_shared_cache_entry,
 )
-from optimizer_service import (
+from optimizer.service import (
     build_optimizer_config,
     list_available_models,
     optimize_prompt_with_active_backend,
@@ -37,6 +37,7 @@ from optimizer_service import (
 from schemas import (
     AuthResponse,
     AuthStatus,
+    ChangePasswordRequest,
     OptimizeConfigOut,
     OptimizeConfigUpdate,
     ProjectCreate,
@@ -346,6 +347,20 @@ def get_version() -> dict[str, str]:
 @app.get("/auth/me", response_model=UserOut)
 def get_me(current_user: User = Depends(auth_service.get_current_user)) -> UserOut:
     return to_user_out(current_user)
+
+
+@app.post("/auth/me/password", status_code=204)
+def change_own_password(
+    data: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth_service.get_current_user),
+) -> None:
+    auth_service.change_own_password(
+        db,
+        current_user,
+        current_password=data.current_password,
+        new_password=data.new_password,
+    )
 
 
 @app.get("/roles", response_model=list[RoleOut])

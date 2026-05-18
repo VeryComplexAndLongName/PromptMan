@@ -8,12 +8,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 import crud
-import auth_service
+import auth as auth_service
 import main
-import optimizer_service
+import optimizer.service as optimizer_service
 from database import Base, init_database
 from models import Project, Prompt, Role, Tag
-from optimizer_service import (
+from optimizer.service import (
     LeoPromptOptimizerBackend,
     _normalize_text,
     _parse_structured_response,
@@ -88,7 +88,8 @@ def test_optimize_backend_falls_back_on_timeout(monkeypatch):  # type: ignore[no
             return "unreachable"
 
     monkeypatch.setitem(__import__("sys").modules, "leo_prompt_optimizer", type("_M", (), {"LeoOptimizer": _FakeLeoOptimizer}))
-    monkeypatch.setattr(optimizer_service, "_run_with_timeout", lambda func, timeout_seconds, operation_name: (_ for _ in ()).throw(TimeoutError("timed out")))
+    import optimizer.leo_backend as _leo_backend
+    monkeypatch.setattr(_leo_backend, "_run_with_timeout", lambda func, timeout_seconds, operation_name: (_ for _ in ()).throw(TimeoutError("timed out")))
 
     cfg = optimizer_service.build_optimizer_config(
         {

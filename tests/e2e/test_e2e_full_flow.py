@@ -1,4 +1,4 @@
-from optimizer_service import OptimizationResult
+from optimizer.service import OptimizationResult
 
 
 def test_end_to_end_all_endpoints(client, sample_prompt_payload, monkeypatch):  # type: ignore[no-untyped-def]
