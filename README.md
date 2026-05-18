@@ -314,7 +314,9 @@ GET /optimize/providers/{provider}/models
 - `BOOTSTRAP_ADMIN_PASSWORD`
   - optional first-run admin password override
 - `PROMPTMAN_KEY`
-  - optional machine/app key source for encryption
+  - encryption/signing key; set this explicitly for persistent deployments (especially Docker)
+- `PROMPTMAN_KEY_PREVIOUS`
+  - optional comma-separated list of older keys used for decryption fallback during key rotation/migration
 - `OPTIMIZER_BACKEND`
   - active optimizer backend name (default: `leo`)
 - `OPTIMIZER_MODEL_ID`
@@ -335,6 +337,12 @@ GET /optimize/providers/{provider}/models
   - fallback encrypted token source
 
 Per-user config returned by `/optimize/config` takes precedence over environment defaults for that user's optimize flows.
+
+For Docker with a mounted database volume, keep `PROMPTMAN_KEY` stable between image updates/recreates. Example:
+
+```powershell
+docker run --name prompt-man --restart unless-stopped -p 8000:8000 -e DATABASE_URL=sqlite:////data/prompts.db -e PROMPTMAN_KEY="your-long-stable-secret" -v promptman-data:/data verycomplexandlongname/prompt-man:0.1.5
+```
 
 ## API Surface
 

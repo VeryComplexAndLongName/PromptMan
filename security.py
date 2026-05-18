@@ -13,19 +13,37 @@ from loguru import logger
 _PASSWORD_ITERATIONS = 390000
 ACCESS_TOKEN_TTL_SECONDS = 30 * 60
 REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7
+_DEFAULT_PROMPTMAN_KEY = "promptman-default-key-change-me"
 
 
-def _machine_secret() -> str:
-    return os.getenv("PROMPTMAN_KEY", os.uname().nodename if hasattr(os, "uname") else "default")
+def _active_machine_secret() -> str:
+    configured = (os.getenv("PROMPTMAN_KEY") or "").strip()
+    if configured:
+        return configured
+    logger.warning("security.key.default_used set PROMPTMAN_KEY for persistent deployments")
+    return _DEFAULT_PROMPTMAN_KEY
 
 
-def _derive_key(label: str) -> bytes:
-    material = hashlib.sha256(f"{label}:{_machine_secret()}".encode()).digest()
+def _previous_machine_secrets() -> list[str]:
+    previous = (os.getenv("PROMPTMAN_KEY_PREVIOUS") or "").strip()
+    if not previous:
+        return []
+    return [item.strip() for item in previous.split(",") if item.strip()]
+
+
+def _derive_key(label: str, secret: str) -> bytes:
+    material = hashlib.sha256(f"{label}:{secret}".encode()).digest()
     return base64.urlsafe_b64encode(material)
 
 
-_CIPHER = Fernet(_derive_key("fernet"))
-_TOKEN_SECRET = hashlib.sha256(_derive_key("token")).digest()
+def _build_cipher(secret: str) -> Fernet:
+    return Fernet(_derive_key("fernet", secret))
+
+
+_ACTIVE_SECRET = _active_machine_secret()
+_CIPHER = _build_cipher(_ACTIVE_SECRET)
+_PREVIOUS_CIPHERS = [_build_cipher(secret) for secret in _previous_machine_secrets() if secret != _ACTIVE_SECRET]
+_TOKEN_SECRET = hashlib.sha256(_derive_key("token", _ACTIVE_SECRET)).digest()
 
 
 def encrypt_secret(value: str | None) -> str | None:
@@ -44,6 +62,13 @@ def decrypt_secret(value: str | None) -> str | None:
     try:
         return _CIPHER.decrypt(value.encode()).decode("utf-8")
     except InvalidToken:
+        for previous_cipher in _PREVIOUS_CIPHERS:
+            try:
+                plaintext = previous_cipher.decrypt(value.encode()).decode("utf-8")
+                logger.warning("security.decrypt.used_previous_key")
+                return plaintext
+            except InvalidToken:
+                continue
         logger.warning("security.decrypt.invalid_token")
         return None
     except Exception as exc:
