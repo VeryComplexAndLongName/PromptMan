@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import tomllib
+from contextlib import asynccontextmanager
 from collections.abc import Iterator
 from pathlib import Path
 from time import perf_counter
@@ -18,7 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 import auth as auth_service
 import crud
-from database import SessionLocal, init_database
+from database import SQLALCHEMY_DATABASE_URL, SessionLocal, init_database
 from models import Prompt, User
 from cache.shared_cache import (
     PROMPT_CACHE_PREFIX,
@@ -79,7 +80,50 @@ def _resolve_app_version() -> str:
 APP_VERSION = _resolve_app_version()
 
 
-app = FastAPI(title="Prompt Man", version=APP_VERSION)
+def _redact_database_url(url: str) -> str:
+    if "://" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    if "@" not in rest:
+        return url
+    _, host_part = rest.split("@", 1)
+    return f"{scheme}://***@{host_part}"
+
+
+def _run_startup_bootstrap() -> None:
+    startup_started = perf_counter()
+    logger.info("startup.begin")
+
+    migrate_started = perf_counter()
+    init_database()
+    logger.info("startup.migrations.done duration_ms={:.2f}", (perf_counter() - migrate_started) * 1000)
+
+    bootstrap_started = perf_counter()
+    db = SessionLocal()
+    try:
+        auth_service.maybe_bootstrap_admin(db)
+    finally:
+        db.close()
+
+    logger.info("startup.bootstrap.done duration_ms={:.2f}", (perf_counter() - bootstrap_started) * 1000)
+    logger.info("startup.ready total_duration_ms={:.2f}", (perf_counter() - startup_started) * 1000)
+    logger.info(
+        "startup.health status=ready pid={} db_url={}",
+        os.getpid(),
+        _redact_database_url(SQLALCHEMY_DATABASE_URL),
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _run_startup_bootstrap()
+    try:
+        yield
+    finally:
+        logger.info("shutdown.begin pid={}", os.getpid())
+
+
+app = FastAPI(title="Prompt Man", version=APP_VERSION, lifespan=lifespan)
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
 
 CONSOLE_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
@@ -157,10 +201,6 @@ def configure_logging() -> None:
     uvicorn_access_logger.handlers.clear()
     uvicorn_access_logger.propagate = False
 
-    uvicorn_error_logger = logging.getLogger("uvicorn.error")
-    uvicorn_error_logger.handlers.clear()
-    uvicorn_error_logger.propagate = False
-
 
 class ExceptionLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
@@ -220,16 +260,6 @@ def get_db() -> Iterator[Session]:
     db = SessionLocal()
     try:
         yield db
-    finally:
-        db.close()
-
-
-@app.on_event("startup")
-def bootstrap_admin_if_needed() -> None:
-    init_database()
-    db = SessionLocal()
-    try:
-        auth_service.maybe_bootstrap_admin(db)
     finally:
         db.close()
 
