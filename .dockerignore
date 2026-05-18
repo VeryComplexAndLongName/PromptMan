@@ -1,6 +1,7 @@
 # VCS
 .git
 .gitignore
+.github/
 
 # Local Python environments and caches
 .venv/
@@ -25,6 +26,7 @@ logs/
 
 # Test and load-test artifacts
 tests/
+loadtests/
 loadtests/results/
 
 # Local images and misc artifacts

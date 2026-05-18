@@ -23,11 +23,7 @@ WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
 
-COPY alembic ./alembic
-COPY ui ./ui
-COPY alembic.ini ./
-COPY *.py ./
-COPY pyproject.toml ./
+COPY . .
 
 EXPOSE 8000
 

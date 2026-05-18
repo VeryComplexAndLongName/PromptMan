@@ -95,6 +95,13 @@ jobs:
         echo "size_bytes=$SIZE_BYTES" >> "$GITHUB_OUTPUT"
         echo "size_mb=$SIZE_MB" >> "$GITHUB_OUTPUT"
 
+    - name: Smoke test container import
+      shell: bash
+      run: |
+        set -euo pipefail
+        IMAGE_REF="${{ steps.image_size.outputs.image_ref }}"
+        docker run --rm --entrypoint python "$IMAGE_REF" -c "import main; print('import main: OK')"
+
     - name: Enforce max image size
       shell: bash
       run: |
