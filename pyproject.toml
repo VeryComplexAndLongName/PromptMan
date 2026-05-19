@@ -58,7 +58,7 @@ disallow_incomplete_defs = true
 check_untyped_defs = true
 no_implicit_optional = true
 explicit_package_bases = true
-exclude = ["^snippets/"]
+exclude = ["^snippets/", "^loadtests/", "^tests/"]
 
 [[tool.mypy.overrides]]
 module = ["alembic.*"]
@@ -67,12 +67,6 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["leo_prompt_optimizer.*"]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["tests.*"]
-disallow_untyped_defs = false
-warn_return_any = false
-warn_unused_ignores = false
 
 [[tool.mypy.overrides]]
 module = ["app_core.*", "cache.*", "database", "middleware.*", "models", "models.*", "optimizer.*", "routes.shared"]

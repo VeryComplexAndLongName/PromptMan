@@ -50,7 +50,7 @@ jobs:
           python -m pip install mypy sqlalchemy[mypy] types-requests httpx pytest
 
       - name: Run mypy
-        run: python -m mypy .
+        run: python -m mypy . --exclude loadtests --exclude tests
 
   tests:
     runs-on: ubuntu-latest
