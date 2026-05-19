@@ -1,4 +1,18 @@
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, Integer, String, Table, Text, UniqueConstraint, func
+import datetime
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, relationship
 
 from database import Base
@@ -47,8 +61,8 @@ class Prompt(Base):
     id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
     name: Mapped[str] = Column(String, index=True, nullable=False)  # type: ignore[assignment]
     project_id: Mapped[int] = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False)  # type: ignore[assignment]
-    created_at: Mapped[DateTime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
-    updated_at: Mapped[DateTime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    updated_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
     created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
     updated_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
 
@@ -75,7 +89,7 @@ class User(Base):
     password_hash_encrypted: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]
     role_id: Mapped[int] = Column(Integer, ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False, index=True)  # type: ignore[assignment]
     is_active: Mapped[bool] = Column(Boolean, nullable=False, default=True)  # type: ignore[assignment]
-    password_changed_at: Mapped[DateTime | None] = Column(DateTime(timezone=True), nullable=True)  # type: ignore[assignment]
+    password_changed_at: Mapped[datetime.datetime | None] = Column(DateTime(timezone=True), nullable=True)  # type: ignore[assignment]
 
     role_ref: Mapped["Role"] = relationship("Role", back_populates="users")
     config: Mapped["Config | None"] = relationship("Config", back_populates="user", cascade="all, delete-orphan", uselist=False)
@@ -149,7 +163,7 @@ class PromptVersion(Base):
     id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
     prompt_id: Mapped[int] = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"))  # type: ignore[assignment]
     version: Mapped[int] = Column(Integer)  # type: ignore[assignment]
-    created_at: Mapped[DateTime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
     created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
     role: Mapped[str | None] = Column(String, nullable=True)  # type: ignore[assignment]
     task: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]

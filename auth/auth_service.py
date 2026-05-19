@@ -8,8 +8,8 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 import crud
-from database import SessionLocal
-from models.models import Config, Role, User
+from database import SessionLocal, close_db_session, run_db_call
+from models.models import Config, User
 from optimizer.service import build_optimizer_config, get_runtime_optimizer_config
 from security import (
     ACCESS_TOKEN_TTL_SECONDS,
@@ -41,7 +41,7 @@ def get_db_session():  # type: ignore[no-untyped-def]
     try:
         yield db
     finally:
-        db.close()
+        close_db_session(db)
 
 
 def issue_tokens_for_user(user: User) -> dict[str, Any]:
@@ -168,8 +168,8 @@ def change_own_password(
     if user.password_changed_at is not None:
         last_change = user.password_changed_at
         if last_change.tzinfo is None:
-            last_change = last_change.replace(tzinfo=datetime.timezone.utc)
-        elapsed = (datetime.datetime.now(datetime.timezone.utc) - last_change).total_seconds()
+            last_change = last_change.replace(tzinfo=datetime.UTC)
+        elapsed = (datetime.datetime.now(datetime.UTC) - last_change).total_seconds()
         remaining = int(CHANGE_PASSWORD_COOLDOWN_SECONDS - elapsed)
         if remaining > 0:
             raise HTTPException(
@@ -183,7 +183,7 @@ def change_own_password(
         db,
         user,
         password_hash_encrypted=encrypted_hash,
-        password_changed_at=datetime.datetime.now(datetime.timezone.utc),
+        password_changed_at=datetime.datetime.now(datetime.UTC),
     )
 
 
@@ -205,7 +205,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db_session)) ->
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    user = crud.get_user_by_id(db, int(user_id))
+    user = run_db_call(db, crud.get_user_by_id, int(user_id))
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user")
     return user

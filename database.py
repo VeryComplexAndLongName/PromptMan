@@ -1,22 +1,28 @@
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+
+from alembic import command
 
 SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./prompts.db")
 
 is_sqlite = SQLALCHEMY_DATABASE_URL.startswith("sqlite")
 
-engine_kwargs: dict[str, Any] = {
+P = ParamSpec("P")
+T = TypeVar("T")
+DatabaseSession = Session
+
+sync_engine_kwargs: dict[str, Any] = {
     "pool_pre_ping": True,
 }
 
 if is_sqlite:
-    engine_kwargs.update(
+    sync_engine_kwargs.update(
         {
             "connect_args": {
                 "check_same_thread": False,
@@ -25,7 +31,7 @@ if is_sqlite:
         }
     )
 else:
-    engine_kwargs.update(
+    sync_engine_kwargs.update(
         {
             "pool_size": 20,
             "max_overflow": 40,
@@ -34,11 +40,15 @@ else:
         }
     )
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_kwargs)
+startup_engine = create_engine(SQLALCHEMY_DATABASE_URL, **sync_engine_kwargs)
+engine = startup_engine
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+StartupSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=startup_engine)
 
 
 if is_sqlite:
-    @event.listens_for(engine, "connect")
+    @event.listens_for(startup_engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record) -> None:  # type: ignore[no-untyped-def]
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL;")
@@ -47,9 +57,17 @@ if is_sqlite:
         cursor.execute("PRAGMA foreign_keys=ON;")
         cursor.close()
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
+
+
+def close_db_session(db: DatabaseSession) -> None:
+    db.close()
+
+
+def run_db_call(db: DatabaseSession, operation: Callable[Concatenate[DatabaseSession, P], T], /, *args: P.args, **kwargs: P.kwargs) -> T:
+    return operation(db, *args, **kwargs)
 
 
 def _run_alembic_upgrade() -> None:
@@ -70,4 +88,4 @@ def init_database(bind=None) -> None:  # type: ignore[no-untyped-def]
         return
 
     _run_alembic_upgrade()
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=startup_engine)

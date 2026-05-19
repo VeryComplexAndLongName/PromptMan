@@ -1,39 +1,60 @@
-import datetime
-import logging
-import os
-import sys
-import tomllib
-from contextlib import asynccontextmanager
 from collections.abc import Iterator
-from pathlib import Path
-from time import perf_counter
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from sqlalchemy.orm import Session
-from starlette.middleware.base import BaseHTTPMiddleware
 
 import auth as auth_service
 import crud
-from database import SQLALCHEMY_DATABASE_URL, SessionLocal, init_database
-from models import Prompt, User
-from cache.shared_cache import (
-    PROMPT_CACHE_PREFIX,
-    PROMPT_CACHE_TTL_SECONDS,
-    build_prompt_collection_cache_key,
-    build_prompt_response_cache_key,
-    cache_get_or_set,
-    clear_shared_cache,
-    delete_shared_cache_entry,
+from app_core.lifecycle import create_lifespan, resolve_app_version, run_startup_bootstrap
+from app_core.logging_config import configure_logging
+from database import (
+    SQLALCHEMY_DATABASE_URL,
+    SessionLocal,
+    StartupSessionLocal,
+    close_db_session,
+    init_database,
 )
-from optimizer.service import (
-    build_optimizer_config,
-    list_available_models,
-    optimize_prompt_with_active_backend,
+from middleware import ExceptionLoggingMiddleware, RequestLoggingMiddleware
+from models import User
+from optimizer.service import list_available_models, optimize_prompt_with_active_backend
+from routes import (
+    bootstrap_admin_route,
+    change_own_password_route,
+    create_project_route,
+    create_prompt_route,
+    create_user_route,
+    delete_project_route,
+    delete_prompt_route,
+    delete_user_route,
+    get_app_version_route,
+    get_auth_status_route,
+    get_me_route,
+    get_optimize_config_route,
+    get_project_route,
+    get_prompt_route,
+    get_prompt_version_route,
+    get_provider_models_route,
+    get_user_route,
+    list_projects_route,
+    list_prompts_route,
+    list_roles_route,
+    list_users_route,
+    list_versions_route,
+    login_route,
+    optimize_prompt_route,
+    refresh_auth_route,
+    search_prompts_route,
+    serve_ui_route,
+    update_optimize_config_route,
+    update_project_route,
+    update_prompt_route,
+    update_prompt_tags_route,
+    update_user_projects_route,
+    update_user_route,
 )
 from schemas import (
     AuthResponse,
@@ -41,19 +62,19 @@ from schemas import (
     ChangePasswordRequest,
     OptimizeConfigOut,
     OptimizeConfigUpdate,
+    ProjectAccessUpdate,
     ProjectCreate,
     ProjectOut,
-    RoleOut,
+    ProjectUpdate,
     PromptCreate,
     PromptData,
     PromptOptimizeResponse,
     PromptOut,
-    PromptVersionOut,
     PromptTagsUpdate,
     PromptUpdate,
-    ProjectAccessUpdate,
-    ProjectUpdate,
+    PromptVersionOut,
     RefreshTokenRequest,
+    RoleOut,
     UserBootstrap,
     UserCreate,
     UserLogin,
@@ -61,189 +82,35 @@ from schemas import (
     UserUpdate,
 )
 
+APP_VERSION = resolve_app_version()
 
-def _resolve_app_version() -> str:
-    pyproject_path = Path(__file__).resolve().parent / "pyproject.toml"
-    if pyproject_path.exists():
-        try:
-            with pyproject_path.open("rb") as fp:
-                pyproject = tomllib.load(fp)
-            version = pyproject.get("project", {}).get("version")
-            if isinstance(version, str) and version.strip():
-                return version.strip()
-        except Exception:
-            pass
-
-    return "0.0.0"
-
-
-APP_VERSION = _resolve_app_version()
-
-
-def _redact_database_url(url: str) -> str:
-    if "://" not in url:
-        return url
-    scheme, rest = url.split("://", 1)
-    if "@" not in rest:
-        return url
-    _, host_part = rest.split("@", 1)
-    return f"{scheme}://***@{host_part}"
+__all__ = [
+    "SessionLocal",
+    "StartupSessionLocal",
+    "app",
+    "crud",
+    "get_db",
+    "init_database",
+    "list_available_models",
+    "optimize_prompt_with_active_backend",
+]
 
 
 def _run_startup_bootstrap() -> None:
-    startup_started = perf_counter()
-    logger.info("startup.begin")
-
-    migrate_started = perf_counter()
-    init_database()
-    logger.info("startup.migrations.done duration_ms={:.2f}", (perf_counter() - migrate_started) * 1000)
-
-    bootstrap_started = perf_counter()
-    db = SessionLocal()
-    try:
-        auth_service.maybe_bootstrap_admin(db)
-    finally:
-        db.close()
-
-    logger.info("startup.bootstrap.done duration_ms={:.2f}", (perf_counter() - bootstrap_started) * 1000)
-    logger.info("startup.ready total_duration_ms={:.2f}", (perf_counter() - startup_started) * 1000)
-    logger.info(
-        "startup.health status=ready pid={} db_url={}",
-        os.getpid(),
-        _redact_database_url(SQLALCHEMY_DATABASE_URL),
+    run_startup_bootstrap(
+        SQLALCHEMY_DATABASE_URL,
+        init_database,
+        StartupSessionLocal,
+        auth_service.maybe_bootstrap_admin,
+        close_db_session,
     )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    _run_startup_bootstrap()
-    try:
-        yield
-    finally:
-        logger.info("shutdown.begin pid={}", os.getpid())
+lifespan = create_lifespan(_run_startup_bootstrap)
 
 
 app = FastAPI(title="Prompt Man", version=APP_VERSION, lifespan=lifespan)
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
-
-CONSOLE_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
-SHOW_CONSOLE_SOURCE = os.getenv("SHOW_CONSOLE_SOURCE", "0").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _console_log_format(record: dict) -> str:
-    def _escape_markup(value: object) -> str:
-        return str(value).replace("<", "\\<").replace(">", "\\>")
-
-    message = _escape_markup(record["message"])
-    source = f"{_escape_markup(record['name'])}:{_escape_markup(record['function'])}:{record['line']}"
-    badge = "<white>APP     </white>"
-    message_color = "<level>"
-
-    if message.startswith("request.start"):
-        badge = "<blue>HTTP IN </blue>"
-        message_color = "<blue>"
-    elif message.startswith("request.end"):
-        badge = "<green>HTTP OUT</green>"
-        message_color = "<green>"
-    elif message.startswith("request.error") or message.startswith("request.exception"):
-        badge = "<red>HTTP ERR</red>"
-        message_color = "<red>"
-    elif message.startswith("optimize.gradient"):
-        badge = "<magenta>GP      </magenta>"
-        message_color = "<magenta>"
-    elif message.startswith("optimize.provider"):
-        badge = "<yellow>LLM     </yellow>"
-        message_color = "<yellow>"
-    elif message.startswith("optimize.config"):
-        badge = "<cyan>CFG     </cyan>"
-        message_color = "<cyan>"
-    elif message.startswith("logging.configured"):
-        badge = "<green>BOOT    </green>"
-        message_color = "<green>"
-
-    source_part = f" <cyan>{source}</cyan> " if SHOW_CONSOLE_SOURCE else ""
-
-    return (
-        f"<dim>{record['time'].astimezone(datetime.timezone.utc):YYYY-MM-DD HH:mm:ss.SSS} UTC</dim> "
-        f"{badge} "
-        f"<level>{record['level'].name:<8}</level> "
-        f"{source_part}"
-        f"{message_color}{message}</>\n{{exception}}"
-    )
-
-
-def configure_logging() -> None:
-    os.makedirs("logs", exist_ok=True)
-    logger.remove()
-    logger.add(
-        sys.stderr,
-        level=CONSOLE_LOG_LEVEL,
-        enqueue=True,
-        backtrace=False,
-        diagnose=False,
-        colorize=True,
-        format=_console_log_format,
-    )
-    logger.add(
-        "logs/app.log",
-        level="DEBUG",
-        rotation="10 MB",
-        retention="10 days",
-        enqueue=True,
-        backtrace=True,
-        diagnose=False,
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS!UTC} UTC | {level} | {name}:{function}:{line} | {message}",
-    )
-
-    # Uvicorn access logs have their own formatter and make console output inconsistent
-    # with the application logs emitted through Loguru below.
-    uvicorn_access_logger = logging.getLogger("uvicorn.access")
-    uvicorn_access_logger.handlers.clear()
-    uvicorn_access_logger.propagate = False
-
-
-class ExceptionLoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
-        started_at = perf_counter()
-        try:
-            return await call_next(request)
-        except Exception:
-            duration_ms = (perf_counter() - started_at) * 1000
-            client = request.client.host if request.client else "unknown"
-            logger.exception(
-                "request.exception method={} path={} query={} client={} duration_ms={:.2f}",
-                request.method,
-                request.url.path,
-                request.url.query,
-                client,
-                duration_ms,
-            )
-            return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
-
-
-class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
-        start = perf_counter()
-        client = request.client.host if request.client else "unknown"
-        logger.info(
-            "request.start method={} path={} query={} client={}",
-            request.method,
-            request.url.path,
-            request.url.query,
-            client,
-        )
-
-        response = await call_next(request)
-
-        duration_ms = (perf_counter() - start) * 1000
-        logger.info(
-            "request.end method={} path={} status={} duration_ms={:.2f}",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-        )
-        return response
 
 
 configure_logging()
@@ -261,122 +128,42 @@ def get_db() -> Iterator[Session]:
     try:
         yield db
     finally:
-        db.close()
-
-
-def to_user_out(user: User) -> UserOut:
-    return UserOut(**auth_service.user_to_dict(user))
-
-
-def to_project_out(project) -> ProjectOut:  # type: ignore[no-untyped-def]
-    return ProjectOut(id=project.id, name=project.name)
-
-
-def get_personal_config(db: Session, current_user: User) -> dict:
-    config = auth_service.get_or_create_personal_config(db, current_user)
-    return auth_service.serialize_optimizer_config(config)
-
-
-def allowed_projects(current_user: User) -> list[str] | None:
-    return auth_service.allowed_projects_for_user(current_user)
-
-
-def normalize_utc_datetime(value: datetime.datetime | None) -> datetime.datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=datetime.timezone.utc)
-    return value.astimezone(datetime.timezone.utc)
-
-
-def to_prompt_out(db: Session, prompt: Prompt) -> PromptOut:
-    latest = crud.get_latest_version(db, prompt.id)
-    if not latest:
-        raise ValueError(f"No version found for prompt {prompt.id}")
-    return PromptOut(
-        name=prompt.name,
-        project=prompt.project,
-        created_at=normalize_utc_datetime(prompt.created_at),
-        updated_at=normalize_utc_datetime(prompt.updated_at),
-        created_by_username=crud.resolve_audit_username(db, prompt.created_by_ref),
-        updated_by_username=crud.resolve_audit_username(db, prompt.updated_by_ref),
-        tags=[tag.name for tag in prompt.tags],
-        latest_version=latest.version,
-        role=latest.role,
-        task=latest.task,
-        context=latest.context,
-        constraints=latest.constraints,
-        output_format=latest.output_format,
-        examples=latest.examples,
-    )
-
-
-def _invalidate_prompt_cache(project: str, name: str) -> None:
-    delete_shared_cache_entry(build_prompt_response_cache_key(project, name))
-    clear_shared_cache(PROMPT_CACHE_PREFIX)
-
-
-def to_prompt_version_out(db: Session, version) -> PromptVersionOut:  # type: ignore[no-untyped-def]
-    return PromptVersionOut(
-        version=version.version,
-        created_at=normalize_utc_datetime(version.created_at),
-        created_by_username=crud.resolve_audit_username(db, version.created_by_ref),
-        role=version.role,
-        task=version.task,
-        context=version.context,
-        constraints=version.constraints,
-        output_format=version.output_format,
-        examples=version.examples,
-    )
+        close_db_session(db)
 
 
 @app.get("/", include_in_schema=False)
 def serve_ui() -> FileResponse:
-    return FileResponse("ui/html/index.html")
+    return serve_ui_route()
 
 
 @app.post("/auth/bootstrap-admin", response_model=AuthResponse)
-def bootstrap_admin(data: UserBootstrap, db: Session = Depends(get_db)) -> AuthResponse:
-    if crud.list_users(db):
-        raise HTTPException(409, "Users already exist")
-    user = auth_service.create_user_record(
-        db,
-        username=data.username,
-        password=data.password,
-        role="admin",
-        is_active=True,
-        projects=[],
-    )
-    return AuthResponse(**auth_service.build_auth_response(user))
+def bootstrap_admin(data: UserBootstrap, db=Depends(get_db)) -> AuthResponse:  # type: ignore[no-untyped-def]
+    return bootstrap_admin_route(data, db)
 
 
 @app.post("/auth/login", response_model=AuthResponse)
-def login(data: UserLogin, db: Session = Depends(get_db)) -> AuthResponse:
-    user = auth_service.authenticate_user(db, data.username, data.password)
-    if not user:
-        raise HTTPException(401, "Invalid credentials")
-    return AuthResponse(**auth_service.build_auth_response(user))
+def login(data: UserLogin, db=Depends(get_db)) -> AuthResponse:  # type: ignore[no-untyped-def]
+    return login_route(data, db)
 
 
 @app.post("/auth/refresh", response_model=AuthResponse)
-def refresh_auth(data: RefreshTokenRequest, db: Session = Depends(get_db)) -> AuthResponse:
-    return AuthResponse(**auth_service.refresh_session(db, data.refresh_token))
+def refresh_auth(data: RefreshTokenRequest, db=Depends(get_db)) -> AuthResponse:  # type: ignore[no-untyped-def]
+    return refresh_auth_route(data, db)
 
 
 @app.get("/auth/status", response_model=AuthStatus)
-def get_auth_status(db: Session = Depends(get_db)) -> AuthStatus:
-    has_users = bool(crud.list_users(db))
-    return AuthStatus(bootstrap_required=not has_users, has_users=has_users)
+def get_auth_status(db=Depends(get_db)) -> AuthStatus:  # type: ignore[no-untyped-def]
+    return get_auth_status_route(db)
 
 
 @app.get("/version")
-def get_version() -> dict[str, str]:
-    return {"name": "prompt-man", "version": APP_VERSION}
+def get_app_version() -> dict[str, str]:
+    return get_app_version_route(APP_VERSION)
 
 
 @app.get("/auth/me", response_model=UserOut)
 def get_me(current_user: User = Depends(auth_service.get_current_user)) -> UserOut:
-    return to_user_out(current_user)
+    return get_me_route(current_user)
 
 
 @app.post("/auth/me/password", status_code=204)
@@ -385,125 +172,67 @@ def change_own_password(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth_service.get_current_user),
 ) -> None:
-    auth_service.change_own_password(
-        db,
-        current_user,
-        current_password=data.current_password,
-        new_password=data.new_password,
-    )
+    change_own_password_route(data, db, current_user)
 
 
 @app.get("/roles", response_model=list[RoleOut])
-def list_roles(db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[RoleOut]:
-    return [RoleOut(**item) for item in auth_service.list_roles_out(db)]
+def list_roles(db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[RoleOut]:  # type: ignore[no-untyped-def]
+    return list_roles_route(db)
 
 
 @app.get("/users", response_model=list[UserOut])
-def list_users(db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[UserOut]:
-    return [to_user_out(user) for user in crud.list_users(db)]
+def list_users(db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[UserOut]:  # type: ignore[no-untyped-def]
+    return list_users_route(db)
 
 
 @app.post("/users", response_model=UserOut)
-def create_user(data: UserCreate, db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:
-    user = auth_service.create_user_record(
-        db,
-        username=data.username,
-        password=data.password,
-        role=data.role,
-        is_active=data.is_active,
-        projects=data.projects,
-    )
-    return to_user_out(user)
+def create_user(data: UserCreate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
+    return create_user_route(data, db)
 
 
 @app.get("/users/{user_id}", response_model=UserOut)
-def get_user(user_id: int, db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:
-    user = crud.get_user_by_id(db, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
-    return to_user_out(user)
+def get_user(user_id: int, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
+    return get_user_route(user_id, db)
 
 
 @app.put("/users/{user_id}", response_model=UserOut)
-def update_user(user_id: int, data: UserUpdate, db: Session = Depends(get_db), current_admin: User = Depends(auth_service.require_admin)) -> UserOut:
-    user = crud.get_user_by_id(db, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
-    if current_admin.id == user.id and data.role is not None and data.role != "admin":
-        raise HTTPException(400, "Admin cannot remove own admin role")
-    updated = auth_service.update_user_record(
-        db,
-        user,
-        username=data.username,
-        password=data.password,
-        role=data.role,
-        is_active=data.is_active,
-        projects=data.projects,
-    )
-    return to_user_out(updated)
+def update_user(user_id: int, data: UserUpdate, db=Depends(get_db), current_admin: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
+    return update_user_route(user_id, data, db, current_admin)
 
 
 @app.put("/users/{user_id}/projects", response_model=UserOut)
-def update_user_projects(user_id: int, data: ProjectAccessUpdate, db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:
-    user = crud.get_user_by_id(db, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
-    updated = crud.set_user_projects(db, user, data.projects)
-    return to_user_out(updated)
+def update_user_projects(user_id: int, data: ProjectAccessUpdate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
+    return update_user_projects_route(user_id, data, db)
 
 
 @app.delete("/users/{user_id}", status_code=204)
-def delete_user(user_id: int, db: Session = Depends(get_db), current_admin: User = Depends(auth_service.require_admin)) -> Response:
-    user = crud.get_user_by_id(db, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
-    if current_admin.id == user.id:
-        raise HTTPException(400, "Admin cannot delete self")
-    crud.delete_user(db, user)
-    return Response(status_code=204)
+def delete_user(user_id: int, db=Depends(get_db), current_admin: User = Depends(auth_service.require_admin)) -> Response:  # type: ignore[no-untyped-def]
+    return delete_user_route(user_id, db, current_admin)
 
 
 @app.get("/projects", response_model=list[ProjectOut])
-def list_projects(db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[ProjectOut]:
-    return [to_project_out(project) for project in crud.list_projects(db)]
+def list_projects(db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[ProjectOut]:  # type: ignore[no-untyped-def]
+    return list_projects_route(db)
 
 
 @app.get("/projects/{project_id}", response_model=ProjectOut)
-def get_project(project_id: int, db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:
-    project = crud.get_project_by_id(db, project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    return to_project_out(project)
+def get_project(project_id: int, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:  # type: ignore[no-untyped-def]
+    return get_project_route(project_id, db)
 
 
 @app.post("/projects", response_model=ProjectOut)
-def create_project(data: ProjectCreate, db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:
-    try:
-        project = crud.create_project(db, data.name)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return to_project_out(project)
+def create_project(data: ProjectCreate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:  # type: ignore[no-untyped-def]
+    return create_project_route(data, db)
 
 
 @app.put("/projects/{project_id}", response_model=ProjectOut)
-def update_project(project_id: int, data: ProjectUpdate, db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:
-    project = crud.get_project_by_id(db, project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    try:
-        updated = crud.update_project(db, project, name=data.name)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    return to_project_out(updated)
+def update_project(project_id: int, data: ProjectUpdate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:  # type: ignore[no-untyped-def]
+    return update_project_route(project_id, data, db)
 
 
 @app.delete("/projects/{project_id}", status_code=204)
-def delete_project(project_id: int, db: Session = Depends(get_db), _: User = Depends(auth_service.require_admin)) -> Response:
-    project = crud.get_project_by_id(db, project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
-    crud.delete_project(db, project)
-    return Response(status_code=204)
+def delete_project(project_id: int, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> Response:  # type: ignore[no-untyped-def]
+    return delete_project_route(project_id, db)
 
 
 @app.get("/prompts/search", response_model=list[PromptOut])
@@ -514,23 +243,7 @@ def search_prompts(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth_service.get_current_user),
 ) -> list[PromptOut]:
-    if project is not None:
-        auth_service.ensure_project_access(current_user, project)
-    user_allowed_projects = allowed_projects(current_user)
-    cache_key = build_prompt_collection_cache_key(
-        route="prompts.search",
-        project=project,
-        tags=tags,
-        mode=mode,
-        allowed_projects=user_allowed_projects,
-    )
-
-    def _load_search() -> list[dict[str, object]]:
-        prompts = crud.search_prompts_by_tags(db, tags=tags, mode=mode, project=project, allowed_projects=user_allowed_projects)
-        return [to_prompt_out(db, p).model_dump(mode="json") for p in prompts]
-
-    cached_prompts = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_search)
-    return [PromptOut(**prompt) for prompt in cached_prompts]
+    return search_prompts_route(tags, mode, project, db, current_user)
 
 
 @app.get("/prompts", response_model=list[PromptOut])
@@ -543,238 +256,57 @@ def list_prompts(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth_service.get_current_user),
 ) -> list[PromptOut]:
-    # Convert string parameters to int safely
-    limit_int: int | None = None
-    offset_int: int | None = None
-    try:
-        if limit:
-            limit_int = int(limit)
-            if limit_int < 1:
-                limit_int = 1
-    except (ValueError, TypeError):
-        limit_int = None
-    
-    try:
-        if offset:
-            offset_int = int(offset)
-            if offset_int < 0:
-                offset_int = 0
-    except (ValueError, TypeError):
-        offset_int = None
-    
-    if project is not None:
-        auth_service.ensure_project_access(current_user, project)
-    user_allowed_projects = allowed_projects(current_user)
-    cache_key = build_prompt_collection_cache_key(
-        route="prompts.list",
-        project=project,
-        tag=tag,
-        limit=limit_int,
-        offset=offset_int,
-        allowed_projects=user_allowed_projects,
-    )
-
-    def _load_list() -> dict[str, object]:
-        total_count = crud.count_prompts(db, project=project, tag=tag, allowed_projects=user_allowed_projects)
-        prompts = crud.list_prompts(db, project=project, tag=tag, limit=limit_int, offset=offset_int, allowed_projects=user_allowed_projects)
-        return {
-            "total_count": total_count,
-            "prompts": [to_prompt_out(db, prompt).model_dump(mode="json") for prompt in prompts],
-        }
-
-    cached_list = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_list)
-    response.headers["X-Total-Count"] = str(int(cached_list.get("total_count", 0)))
-    return [PromptOut(**prompt) for prompt in cached_list.get("prompts", [])]
+    return list_prompts_route(response, project, tag, limit, offset, db, current_user)
 
 
 @app.post("/prompts", response_model=PromptOut)
-def create_prompt(data: PromptCreate, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOut:
-    logger.info("prompt.create name={} project={}", data.name, data.project)
-    auth_service.ensure_project_access(current_user, data.project)
-    prompt = crud.get_prompt(db, data.name, data.project, allowed_projects=allowed_projects(current_user))
-    if prompt:
-        logger.warning("prompt.create.duplicate name={} project={}", data.name, data.project)
-        raise HTTPException(400, "Prompt already exists")
-
-    try:
-        prompt = crud.create_prompt(
-            db,
-            data.name,
-            data.project,
-            task=data.task,
-            actor_id=current_user.id,
-            role=data.role,
-            context=data.context,
-            constraints=data.constraints,
-            output_format=data.output_format,
-            examples=data.examples,
-            tags=data.tags,
-        )
-    except ValueError as exc:
-        logger.warning("prompt.create.duplicate_content name={} project={}", data.name, data.project)
-        raise HTTPException(409, str(exc)) from exc
-    _invalidate_prompt_cache(data.project, data.name)
-    return to_prompt_out(db, prompt)
+def create_prompt(data: PromptCreate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOut:  # type: ignore[no-untyped-def]
+    return create_prompt_route(data, db, current_user)
 
 
 @app.get("/prompts/{project}/{name}", response_model=PromptOut)
-def get_prompt(project: str, name: str, db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptOut:
-    auth_service.ensure_project_access(current_user, project)
-    cache_key = build_prompt_response_cache_key(project, name)
-
-    def _load_prompt() -> dict[str, object]:
-        prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-        if not prompt:
-            raise HTTPException(404, "Prompt not found")
-        return to_prompt_out(db, prompt).model_dump(mode="json")
-
-    cached_prompt = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_prompt)
-    return PromptOut(**cached_prompt)
+def get_prompt(project: str, name: str, db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptOut:  # type: ignore[no-untyped-def]
+    return get_prompt_route(project, name, db, current_user)
 
 
 @app.delete("/prompts/{project}/{name}", status_code=204)
-def delete_prompt(project: str, name: str, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> Response:
-    logger.info("prompt.delete project={} name={}", project, name)
-    auth_service.ensure_project_access(current_user, project)
-    prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-    if not prompt:
-        logger.warning("prompt.delete.not_found project={} name={}", project, name)
-        raise HTTPException(404, "Prompt not found")
-
-    crud.delete_prompt(db, prompt)
-    _invalidate_prompt_cache(project, name)
-    return Response(status_code=204)
+def delete_prompt(project: str, name: str, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> Response:  # type: ignore[no-untyped-def]
+    return delete_prompt_route(project, name, db, current_user)
 
 
 @app.put("/prompts/{project}/{name}", response_model=PromptVersionOut)
-def update_prompt(project: str, name: str, data: PromptUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptVersionOut:
-    logger.info("prompt.update project={} name={}", project, name)
-    auth_service.ensure_project_access(current_user, project)
-    prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-    if not prompt:
-        logger.warning("prompt.update.not_found project={} name={}", project, name)
-        raise HTTPException(404, "Prompt not found")
-
-    if data.tags is not None:
-        crud.set_prompt_tags(db, prompt, data.tags, actor_id=current_user.id)
-
-    try:
-        new_version = crud.add_version(
-            db,
-            prompt.id,
-            task=data.task,
-            actor_id=current_user.id,
-            role=data.role,
-            context=data.context,
-            constraints=data.constraints,
-            output_format=data.output_format,
-            examples=data.examples,
-        )
-    except ValueError as exc:
-        logger.warning("prompt.update.conflict project={} name={} error={}", project, name, str(exc))
-        raise HTTPException(409, str(exc)) from exc
-    _invalidate_prompt_cache(project, name)
-    return to_prompt_version_out(db, new_version)
+def update_prompt(project: str, name: str, data: PromptUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptVersionOut:  # type: ignore[no-untyped-def]
+    return update_prompt_route(project, name, data, db, current_user)
 
 
 @app.put("/prompts/{project}/{name}/tags", response_model=PromptOut)
-def update_prompt_tags(project: str, name: str, data: PromptTagsUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOut:
-    auth_service.ensure_project_access(current_user, project)
-    prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-    if not prompt:
-        raise HTTPException(404, "Prompt not found")
-
-    crud.set_prompt_tags(db, prompt, data.tags, actor_id=current_user.id)
-    _invalidate_prompt_cache(project, name)
-    # Reload prompt from database to ensure all relationships are properly populated
-    prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-    if not prompt:
-        raise HTTPException(404, "Prompt not found after update")
-    return to_prompt_out(db, prompt)
+def update_prompt_tags(project: str, name: str, data: PromptTagsUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOut:  # type: ignore[no-untyped-def]
+    return update_prompt_tags_route(project, name, data, db, current_user)
 
 
 @app.get("/prompts/{project}/{name}/versions", response_model=list[PromptVersionOut])
-def list_versions(project: str, name: str, db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> list[PromptVersionOut]:
-    auth_service.ensure_project_access(current_user, project)
-    cache_key = build_prompt_collection_cache_key(route="prompts.versions", project=project, name=name)
-
-    def _load_versions() -> list[dict[str, object]]:
-        prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-        if not prompt:
-            raise HTTPException(404, "Prompt not found")
-
-        versions = crud.list_versions(db, prompt.id)
-        return [to_prompt_version_out(db, version).model_dump(mode="json") for version in versions]
-
-    cached_versions = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_versions)
-    return [PromptVersionOut(**version) for version in cached_versions]
+def list_versions(project: str, name: str, db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> list[PromptVersionOut]:  # type: ignore[no-untyped-def]
+    return list_versions_route(project, name, db, current_user)
 
 
 @app.get("/prompts/{project}/{name}/versions/{version}", response_model=PromptVersionOut)
-def get_version(project: str, name: str, version: int, db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptVersionOut:
-    auth_service.ensure_project_access(current_user, project)
-    cache_key = build_prompt_collection_cache_key(route="prompts.version", project=project, name=name, version=version)
-
-    def _load_version() -> dict[str, object]:
-        prompt = crud.get_prompt(db, name, project, allowed_projects=allowed_projects(current_user))
-        if not prompt:
-            raise HTTPException(404, "Prompt not found")
-
-        v = crud.get_specific_version(db, prompt.id, version)
-        if not v:
-            raise HTTPException(404, "Version not found")
-
-        return to_prompt_version_out(db, v).model_dump(mode="json")
-
-    cached_version = cache_get_or_set(cache_key, PROMPT_CACHE_TTL_SECONDS, _load_version)
-    return PromptVersionOut(**cached_version)
+def get_prompt_version(project: str, name: str, version: int, db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptVersionOut:  # type: ignore[no-untyped-def]
+    return get_prompt_version_route(project, name, version, db, current_user)
 
 
 @app.post("/optimize", response_model=PromptOptimizeResponse)
-def optimize_prompt(data: PromptData, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOptimizeResponse:
-    logger.info("optimize.request.start")
-    result = optimize_prompt_with_active_backend(data.model_dump(), get_personal_config(db, current_user))
-    logger.info("optimize.request.done engine={}", result.engine)
-    optimized_dict = result.optimized_fields
-    if not isinstance(optimized_dict, dict):
-        optimized_dict = {}
-    optimized = PromptData(
-        role=optimized_dict.get("role"),
-        task=optimized_dict.get("task") or "",
-        context=optimized_dict.get("context"),
-        constraints=optimized_dict.get("constraints"),
-        output_format=optimized_dict.get("output_format"),
-        examples=optimized_dict.get("examples"),
-    )
-    return PromptOptimizeResponse(
-        engine=result.engine,
-        optimized=optimized,
-        optimized_markdown=result.optimized_markdown,
-        notes=result.notes,
-        elapsed_seconds=result.elapsed_seconds,
-    )
+def optimize_prompt(data: PromptData, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOptimizeResponse:  # type: ignore[no-untyped-def]
+    return optimize_prompt_route(data, db, current_user, optimize_prompt_with_active_backend)
 
 
 @app.get("/optimize/config", response_model=OptimizeConfigOut)
-def get_optimize_config(db: Session = Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> OptimizeConfigOut:
-    cfg = get_personal_config(db, current_user)
-    logger.info(
-        "optimize.config.get effective_llm_provider={} effective_llm_model={}",
-        cfg.get("effective_llm_provider"),
-        cfg.get("effective_llm_model"),
-    )
-    return OptimizeConfigOut(**cfg)
+def get_optimize_config(db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
+    return get_optimize_config_route(db, current_user)
 
 
 @app.put("/optimize/config", response_model=OptimizeConfigOut)
-def update_optimize_config(data: OptimizeConfigUpdate, db: Session = Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> OptimizeConfigOut:
-    logger.info(
-        "optimize.config.update llm_provider={} llm_model={}",
-        data.llm_provider,
-        data.llm_model,
-    )
-    cfg = auth_service.update_personal_config(db, current_user, data.model_dump())
-    return OptimizeConfigOut(**cfg)
+def update_optimize_config(data: OptimizeConfigUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
+    return update_optimize_config_route(data, db, current_user)
 
 
 @app.get("/optimize/providers/{provider}/models", response_model=list[str])
@@ -786,12 +318,4 @@ def get_provider_models(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth_service.get_current_user),
 ) -> list[str]:
-    logger.info("optimize.provider.models provider={}", provider)
-    models = list_available_models(
-        provider,
-        base_url=base_url,
-        timeout_seconds=timeout_seconds,
-        api_token=api_token,
-        config_override=get_personal_config(db, current_user),
-    )
-    return models
+    return get_provider_models_route(provider, base_url, api_token, timeout_seconds, db, current_user, list_available_models)

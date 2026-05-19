@@ -1,3 +1,4 @@
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,14 +21,24 @@ from database import Base
 from main import app, get_db
 from optimizer.service import set_runtime_optimizer_config
 
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
+
 
 @pytest.fixture(scope="session")
 def engine():  # type: ignore[no-untyped-def]
-    test_engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    if TEST_DATABASE_URL:
+        test_engine = create_engine(
+            TEST_DATABASE_URL,
+            pool_pre_ping=True,
+        )
+    else:
+        test_engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+
+    Base.metadata.drop_all(bind=test_engine)
     Base.metadata.create_all(bind=test_engine)
     return test_engine
 
@@ -54,11 +65,13 @@ def client(db_session: Session) -> Iterator[TestClient]:
 
     startup_session_factory = sessionmaker(autocommit=False, autoflush=False, bind=db_session.get_bind())
     original_session_local = main.SessionLocal
+    original_startup_session_local = main.StartupSessionLocal
     original_init_database = main.init_database
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[auth_service.get_db_session] = override_get_db
     main.SessionLocal = startup_session_factory
+    main.StartupSessionLocal = startup_session_factory
     main.init_database = lambda bind=None: Base.metadata.create_all(bind=db_session.get_bind())
     with TestClient(app) as test_client:
         login_response = test_client.post(
@@ -72,6 +85,7 @@ def client(db_session: Session) -> Iterator[TestClient]:
         test_client.headers.update({"Authorization": f"Bearer {token}"})
         yield test_client
     main.SessionLocal = original_session_local
+    main.StartupSessionLocal = original_startup_session_local
     main.init_database = original_init_database
     app.dependency_overrides.clear()
 

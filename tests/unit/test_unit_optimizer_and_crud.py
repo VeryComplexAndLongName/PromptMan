@@ -2,13 +2,12 @@ from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter, sleep
 
 import pytest
-from sqlalchemy import insert
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-import crud
 import auth as auth_service
+import crud
 import main
 import optimizer.service as optimizer_service
 from database import Base, init_database
@@ -17,10 +16,11 @@ from optimizer.service import (
     LeoPromptOptimizerBackend,
     _normalize_text,
     _parse_structured_response,
-    optimize_prompt_with_active_backend,
     get_runtime_optimizer_config,
+    optimize_prompt_with_active_backend,
     set_runtime_optimizer_config,
 )
+from tests.conftest import TEST_DATABASE_URL
 
 
 def test_normalize_tags_deduplicates_and_sorts():  # type: ignore[no-untyped-def]
@@ -283,12 +283,16 @@ def test_init_database_and_bootstrap_seed_default_roles(db_session):  # type: ig
 
 
 def test_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path):  # type: ignore[no-untyped-def]
-    db_path = tmp_path / "race_test.db"
-    engine = create_engine(
-        f"sqlite:///{db_path}",
-        connect_args={"check_same_thread": False},
-    )
+    if TEST_DATABASE_URL:
+        engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    else:
+        db_path = tmp_path / "race_test.db"
+        engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
     try:

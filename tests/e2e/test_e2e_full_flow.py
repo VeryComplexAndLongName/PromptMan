@@ -49,8 +49,6 @@ def test_end_to_end_all_endpoints(client, sample_prompt_payload, monkeypatch):  
     put_cfg = client.put(
         "/optimize/config",
         json={
-            "gp_profile": "quality",
-            "rounds": 3,
             "llm_provider": "ollama",
             "llm_model": "qwen2.5:0.5b",
             "llm_base_url": "http://127.0.0.1:11434",
@@ -58,7 +56,8 @@ def test_end_to_end_all_endpoints(client, sample_prompt_payload, monkeypatch):  
         },
     )
     assert put_cfg.status_code == 200
-    assert put_cfg.json()["effective_gp_profile"] == "quality"
+    assert put_cfg.json()["effective_llm_provider"] == "ollama"
+    assert put_cfg.json()["effective_llm_model"] == "qwen2.5:0.5b"
     assert client.get("/optimize/config").status_code == 200
 
     # Optimize with Leo engine

@@ -1,5 +1,5 @@
-from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import false, func
+from sqlalchemy.orm import Query, Session, joinedload
 
 from models import Project, Prompt, PromptVersion, Tag
 
@@ -98,7 +98,12 @@ def get_prompt(db: Session, name: str, project: str, allowed_projects: list[str]
     query = (
         db.query(Prompt)
         .join(Prompt.project_ref)
-        .options(joinedload(Prompt.project_ref), joinedload(Prompt.created_by_ref), joinedload(Prompt.updated_by_ref))
+        .options(
+            joinedload(Prompt.project_ref),
+            joinedload(Prompt.created_by_ref),
+            joinedload(Prompt.updated_by_ref),
+            joinedload(Prompt.tags),
+        )
         .filter(Prompt.name == name, Project.name == normalize_project_name(project))
     )
     if allowed_projects is not None:
@@ -118,17 +123,18 @@ def _build_prompt_list_query(
     project: str | None = None,
     tag: str | None = None,
     allowed_projects: list[str] | None = None,
-):  # type: ignore[no-untyped-def]
+) -> Query[Prompt]:
     query = db.query(Prompt)
     query = query.join(Prompt.project_ref).options(
         joinedload(Prompt.project_ref),
         joinedload(Prompt.created_by_ref),
         joinedload(Prompt.updated_by_ref),
+        joinedload(Prompt.tags),
     )
 
     if allowed_projects is not None:
         if not allowed_projects:
-            return query.filter(False)
+            return query.filter(false())
         query = query.filter(Project.name.in_(allowed_projects))
 
     if project:
@@ -282,7 +288,12 @@ def search_prompts_by_tags(
         return []
 
     query = db.query(Prompt)
-    query = query.join(Prompt.project_ref).options(joinedload(Prompt.project_ref))
+    query = query.join(Prompt.project_ref).options(
+        joinedload(Prompt.project_ref),
+        joinedload(Prompt.created_by_ref),
+        joinedload(Prompt.updated_by_ref),
+        joinedload(Prompt.tags),
+    )
 
     if allowed_projects is not None:
         if not allowed_projects:
@@ -303,7 +314,8 @@ def search_prompts_by_tags(
         query = query.filter(Prompt.id.in_(subq))
     else:
         # OR: at least one tag matches
-        query = query.join(Prompt.tags).filter(Tag.name.in_(normalized)).distinct()
+        subq = db.query(Prompt.id).join(Prompt.tags).filter(Tag.name.in_(normalized))
+        query = query.filter(Prompt.id.in_(subq))
 
     results = query.order_by(Project.name.asc(), Prompt.name.asc()).all()
     return list(results) if results else []

@@ -2,7 +2,7 @@
 import requests
 
 
-def run_diagnostic():  # type: ignore[no-untyped-def]
+def run_diagnostic() -> None:
     try:
         # 1) GET config
         config_url = "http://127.0.0.1:8000/optimize/config"

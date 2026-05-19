@@ -1,5 +1,9 @@
 # Prompt Man
 
+[![CI](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/ci.yml/badge.svg)](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/ci.yml)
+[![Docker](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/docker.yml/badge.svg)](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/docker.yml)
+[![Coverage](https://codecov.io/gh/VeryComplexAndLongName/PromptMan/graph/badge.svg)](https://codecov.io/gh/VeryComplexAndLongName/PromptMan)
+
 Prompt Man: FastAPI + Vue app for storing, versioning, and optimizing prompts.
 
 Prompt Man is **REST API-first**: the primary product surface is the HTTP API, and the application architecture is optimized around API workflows.
@@ -96,6 +100,13 @@ uv sync --extra dev
 .\.venv\Scripts\Activate.ps1
 alembic upgrade head
 ```
+
+## CI And Coverage
+
+- GitHub Actions workflow `CI` runs `ruff`, `mypy`, and the test suite on every push and pull request to `main`.
+- Coverage is uploaded to Codecov from the same workflow, which enables the coverage badge above.
+- For a public repository, the Codecov badge usually works after installing the Codecov GitHub App.
+- For a private repository, add `CODECOV_TOKEN` to repository secrets before the upload step can succeed.
 
 ### Using pip
 
@@ -471,17 +482,11 @@ PostgreSQL is a network database that all instances connect to simultaneously.
 
 ### Switching From SQLite To PostgreSQL
 
-**1. Install the driver** (add to `requirements.txt`):
+**1. Use the built-in PostgreSQL driver already included in the project dependencies:**
 
-```
-psycopg2-binary
-```
+Prompt Man already includes `psycopg2-binary` for PostgreSQL.
 
-Or for async support:
-
-```
-asyncpg
-```
+No code changes are required to switch modes in this repository.
 
 **2. Create a PostgreSQL database and user:**
 
@@ -496,6 +501,11 @@ GRANT ALL PRIVILEGES ON DATABASE promptman TO promptman_user;
 ```
 DATABASE_URL=postgresql://promptman_user:your-strong-password@db-host:5432/promptman
 ```
+
+Notes:
+
+- The application runtime is synchronous for both SQLite and PostgreSQL.
+- Startup migrations run automatically on every boot.
 
 For Docker:
 
@@ -514,6 +524,27 @@ The application creates and migrates the entire database schema automatically on
 [startup] Running Alembic migrations...
 [startup] migrations done  ← schema is ready
 [startup] Application is ready to serve requests
+```
+
+### Switching Back From PostgreSQL To SQLite
+
+Switching back is also only an environment change.
+
+PowerShell:
+
+```powershell
+$env:DATABASE_URL = "sqlite:///./prompts.db"
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+Docker:
+
+```powershell
+docker run --name prompt-man --restart unless-stopped -p 8000:8000 `
+  -e DATABASE_URL=sqlite:////data/prompts.db `
+  -e PROMPTMAN_KEY="your-long-stable-secret" `
+  -v promptman-data:/data `
+  verycomplexandlongname/prompt-man:latest
 ```
 
 ### Database URL Reference
@@ -559,6 +590,24 @@ Load-test scenarios run at 10, 20, and 40 concurrent users. Results confirm that
 python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 15s --users 10 20 40 --spawn-rate 10 --scenarios mixed cache optimize_hot optimize_cold --clean
 ```
 
+### Switch database mode for benchmarks
+
+Switching between **SQLite sync** and **PostgreSQL sync** is just a `DATABASE_URL` change.
+
+SQLite sync:
+
+```powershell
+$env:DATABASE_URL = "sqlite:///./prompts.db"
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+PostgreSQL sync:
+
+```powershell
+$env:DATABASE_URL = "postgresql://postgres:your-password@localhost:5432/promptman"
+uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
 ### Build charts
 
 ```powershell
@@ -570,31 +619,82 @@ When `loadtests/results/benchmark_manifest.json` exists, chart generation uses t
 
 ### Latest benchmark snapshot
 
-Local benchmark snapshot (`15s`, `10/20/40` users, shared auth token, default thresholds `failure<=1%`, `p95<=500ms`):
+Current local SQLite sync snapshot (`15s`, `10/20/40` users, shared auth token, default thresholds `failure<=1%`, `p95<=500ms`):
 
 | Scenario | Users | RPS | P95 (ms) | Avg (ms) | Failure % | Pass |
 | --- | ---: | ---: | ---: | ---: | ---: | :---: |
-| mixed | 10 | 24.17 | 1000.00 | 158.50 | 0.00 | no |
-| mixed | 20 | 13.38 | 4600.00 | 1075.67 | 0.00 | no |
-| mixed | 40 | 10.71 | 1000.00 | 104.25 | 0.00 | no |
-| cache | 10 | 97.51 | 31.00 | 13.23 | 0.00 | yes |
-| cache | 20 | 162.20 | 58.00 | 27.94 | 0.00 | yes |
-| cache | 40 | 174.15 | 160.00 | 104.27 | 0.00 | yes |
-| optimize_hot | 10 | 19.75 | 37.00 | 13.40 | 0.00 | yes |
-| optimize_hot | 20 | 37.87 | 35.00 | 15.38 | 0.00 | yes |
-| optimize_hot | 40 | 68.47 | 66.00 | 25.81 | 0.00 | yes |
-| optimize_cold | 10 | 0.18 | 11000.00 | 6947.02 | 0.00 | no |
+| mixed | 10 | 34.28 | 140.00 | 27.07 | 0.00 | yes |
+| mixed | 20 | 43.01 | 860.00 | 151.87 | 0.00 | no |
+| mixed | 40 | 42.82 | 810.00 | 155.43 | 0.00 | no |
+| cache | 10 | 102.26 | 19.00 | 9.18 | 0.00 | yes |
+| cache | 20 | 189.02 | 30.00 | 13.68 | 0.00 | yes |
+| cache | 40 | 255.70 | 80.00 | 45.51 | 0.00 | yes |
+| optimize_hot | 10 | 19.50 | 19.00 | 9.41 | 0.00 | yes |
+| optimize_hot | 20 | 38.48 | 35.00 | 11.60 | 0.00 | yes |
+| optimize_hot | 40 | 72.01 | 39.00 | 13.85 | 0.00 | yes |
+| optimize_cold | 10 | 0.16 | 12000.00 | 9396.95 | 0.00 | no |
 | optimize_cold | 20 | 0.00 | inf | inf | 100.00 | no |
 | optimize_cold | 40 | 0.00 | inf | inf | 100.00 | no |
 
 Observed takeaway:
 
 - **Zero failures** across all cache and hot-optimization scenarios at every concurrency level — the application handles concurrent access without errors or data corruption.
-- **Cache-heavy traffic scales linearly**: from `97.51 RPS` at 10 users to `174.15 RPS` at 40 users, all with zero failures. This is the dominant usage pattern for teams repeatedly reading shared prompts.
-- **Hot optimization sustains high throughput under concurrency**: `19.75 → 37.87 → 68.47 RPS` as users grow from 10 to 40 — near-linear scaling with sub-70 ms p95.
+- **Cache-heavy traffic scales strongly**: from `102.26 RPS` at `10` users to `255.70 RPS` at `40` users, all with zero failures. This is the dominant usage pattern for teams repeatedly reading shared prompts.
+- **Hot optimization sustains high throughput under concurrency**: `19.50 → 38.48 → 72.01 RPS` as users grow from `10` to `40`, all with zero failures and sub-`40 ms` p95 even at the highest measured concurrency.
 - Mixed CRUD/search traffic is dominated by LLM-bound optimize calls, so it misses the default p95 threshold on this local single-host setup. This reflects the LLM provider latency, not a concurrency issue in the application itself.
 - Cache reuse delivers approximately **110× throughput gain** and **297× p95 reduction** compared to cold optimization on the same host — making repeated prompt optimization viable under team load.
 - At 20 and 40 users, cold optimization (no cache, real LLM call) did not complete requests inside the 15-second window — expected behavior given local LLM latency, not an application defect.
+
+### DB Mode Comparison
+
+The application is currently supported in two runtime configurations:
+
+- SQLite sync
+- PostgreSQL sync
+
+Historical note: before async runtime support was removed, the application was also benchmarked in a PostgreSQL async prototype. Those measurements are kept below for comparison, but that mode is no longer part of the supported application runtime because it did not provide practical gains on this codebase.
+
+Switching between SQLite sync and PostgreSQL sync was verified by changing only `DATABASE_URL`.
+
+### Concurrency smoke comparison
+
+Live HTTP concurrency smoke (`12` parallel prompt creates + `12` parallel list requests, one shared project, one shared tag):
+
+| Mode | Create OK | List OK | Final prompt count |
+| --- | ---: | ---: | ---: |
+| SQLite sync | 12/12 | 12/12 | 12 |
+| PostgreSQL sync | 12/12 | 12/12 | 12 |
+| PostgreSQL async (historical) | 12/12 | 12/12 | 12 |
+
+### 40-user benchmark comparison
+
+Measured at `40` concurrent users on the same machine:
+
+| Mode | Mixed RPS | Mixed P95 (ms) | Cache RPS | Cache P95 (ms) | Optimize Hot RPS | Optimize Hot P95 (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SQLite sync | 42.82 | 810.00 | 255.70 | 80.00 | 72.01 | 39.00 |
+| PostgreSQL sync | 60.62 | 690.00 | 243.62 | 87.00 | 70.69 | 43.00 |
+| PostgreSQL async (historical) | 36.22 | 3100.00 | 179.72 | 200.00 | 68.62 | 100.00 |
+
+### Cold optimize comparison at 10 users
+
+`optimize_cold` remains dominated by LLM latency, so `10` users is the only meaningful finite comparison point:
+
+| Mode | RPS | P95 (ms) | Avg (ms) | Failure % |
+| --- | ---: | ---: | ---: | ---: |
+| SQLite sync | 0.16 | 12000.00 | 9396.95 | 0.00 |
+| PostgreSQL sync | 0.39 | 13000.00 | 7485.71 | 0.00 |
+| PostgreSQL async (historical) | 0.18 | 11000.00 | 7144.59 | 0.00 |
+
+Observed takeaway from the DB-mode comparison:
+
+- **PostgreSQL sync is the best balanced measured mode** on this codebase: it improves mixed-workload throughput and mixed-workload P95 relative to SQLite sync, while keeping cache and hot-optimize performance close.
+- **SQLite sync is still very competitive for read-heavy local workloads** and reached the highest measured cache-only throughput on this machine (`255.70 RPS` at `40` users).
+- **The historical PostgreSQL async prototype did not deliver practical benefits**: mixed throughput was lower than both sync modes, mixed P95 was materially worse, and hot/cache paths were not improved enough to justify the extra runtime complexity.
+- **PostgreSQL is the recommended production mode** for this codebase: it remains operationally simple to enable and was the strongest overall measured option under mixed concurrent load.
+- **Database switching is operationally simple**: SQLite sync ↔ PostgreSQL sync is just a `DATABASE_URL` change.
+- **Concurrency correctness was the same across all measured modes in live smoke testing**: every measured mode completed `12/12` concurrent creates and `12/12` concurrent list requests with the expected final prompt count.
+- **Async runtime support was removed from the application after these measurements**: the benchmark data is preserved here as the rationale for keeping only the simpler sync runtime in the product.
 
 ### Cache Impact Test
 
@@ -643,6 +743,35 @@ General response-time trend. Use together with P95 to distinguish average slowdo
 ![Load Test Failure Rate](loadtests/chart_failure_rate.png)
 
 Percentage of failed requests per scenario and user level. Cache and hot-optimization scenarios show 0% failures at all concurrency levels.
+
+### Historical DB Mode Comparison Charts
+
+These charts were generated before async runtime support was removed. They are retained as historical evidence for the decision to keep the application sync-only.
+
+#### Historical DB Mode Dashboard
+
+![DB Mode Dashboard](loadtests/chart_db_mode_dashboard.png)
+
+Combined comparison of cache throughput, mixed-workload P95, hot optimize throughput, and cold optimize P95 across SQLite sync, PostgreSQL sync, and the historical PostgreSQL async prototype.
+
+#### Historical 40-User Throughput By Mode
+
+![40-User Throughput By Mode](loadtests/chart_db_mode_40_rps.png)
+
+Grouped comparison of `mixed`, `cache`, and `optimize_hot` throughput at `40` users across the measured modes.
+
+#### Historical 40-User P95 By Mode
+
+![40-User P95 By Mode](loadtests/chart_db_mode_40_p95.png)
+
+Grouped comparison of tail latency for the same `40`-user scenarios. PostgreSQL sync remained the most balanced measured option.
+
+#### Historical Cold Optimize P95 At 10 Users
+
+![Cold Optimize P95 At 10 Users](loadtests/chart_db_mode_cold_10_p95.png)
+
+Focused comparison for the cold optimize path at `10` users, where all measured modes still produced finite values.
+
 
 ## Snippets
 

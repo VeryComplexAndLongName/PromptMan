@@ -5,7 +5,10 @@ import time
 from copy import deepcopy
 from dataclasses import dataclass
 from threading import Event, RLock
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _default_max_entries() -> int:

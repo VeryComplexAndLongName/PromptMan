@@ -4,7 +4,7 @@ import json
 import os
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -21,6 +21,9 @@ from optimizer.utils import (
     _run_with_timeout,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
 
 class LeoPromptOptimizerBackend(PromptOptimizerBackend):
     @property
@@ -28,7 +31,8 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
         return "leo"
 
     def _normalize_ollama_base_url(self, base_url: str | None) -> str:
-        candidate = (base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).strip()
+        env_base_url = os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"
+        candidate = (base_url or env_base_url).strip()
         if not candidate:
             candidate = "http://127.0.0.1:11434"
         candidate = candidate.rstrip("/")
@@ -80,7 +84,7 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
 
         return None
 
-    def _build_provider(self, provider_name: str, api_token: str | None, base_url: str | None):
+    def _build_provider(self, provider_name: str, api_token: str | None, base_url: str | None) -> tuple[Any, str]:
         from leo_prompt_optimizer import (
             AnthropicProvider,
             GeminiProvider,
@@ -92,12 +96,12 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
         normalized = (provider_name or "openai").strip().lower()
         if normalized == "openai":
             if self._looks_like_ollama_base_url(base_url):
-                key = (api_token or "ollama").strip() or "ollama"
-                url = self._normalize_ollama_base_url(base_url)
-                return OpenAIProvider(api_key=key, base_url=url), "openai-compat-ollama"
+                ollama_key = (api_token or "ollama").strip() or "ollama"
+                ollama_url = self._normalize_ollama_base_url(base_url)
+                return OpenAIProvider(api_key=ollama_key, base_url=ollama_url), "openai-compat-ollama"
 
-            key = (api_token or "").strip() or None
-            url = (base_url or "").strip() or None
+            key: str | None = (api_token or "").strip() or None
+            url: str | None = (base_url or "").strip() or None
             return OpenAIProvider(api_key=key, base_url=url), "openai"
         if normalized == "ollama":
             key = (api_token or "ollama").strip() or "ollama"
@@ -114,11 +118,11 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
 
         raise ValueError(f"Unsupported provider: {normalized}")
 
-    def optimize(self, fields: dict[str, str | None], config: dict[str, Any]) -> OptimizationResult:
+    def optimize(self, fields: Mapping[str, str | None], config: Mapping[str, Any]) -> OptimizationResult:
         from leo_prompt_optimizer import LeoOptimizer
 
-        provider_name = config["effective_llm_provider"]
-        model_name = config["effective_llm_model"]
+        provider_name = str(config["effective_llm_provider"])
+        model_name = str(config["effective_llm_model"])
         base_url = config.get("effective_llm_base_url")
         api_token = config.get("effective_llm_api_token")
         timeout_seconds = max(5, int(config.get("effective_llm_timeout_seconds") or 120))
@@ -235,7 +239,7 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
         base_url: str | None = None,
         timeout_seconds: int = 5,
         api_token: str | None = None,
-        config_override: dict[str, Any] | None = None,
+        config_override: Mapping[str, Any] | None = None,
     ) -> list[str]:
         normalized = (provider or "").strip().lower()
         if normalized == "openai" and self._looks_like_ollama_base_url(base_url):

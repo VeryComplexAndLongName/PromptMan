@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from optimizer.result import OptimizationResult
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from optimizer.result import OptimizationResult
 
 
 class PromptOptimizerBackend(ABC):
@@ -13,7 +16,7 @@ class PromptOptimizerBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def optimize(self, fields: dict[str, str | None], config: dict[str, Any]) -> OptimizationResult:
+    def optimize(self, fields: Mapping[str, str | None], config: Mapping[str, Any]) -> OptimizationResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -24,6 +27,6 @@ class PromptOptimizerBackend(ABC):
         base_url: str | None = None,
         timeout_seconds: int = 5,
         api_token: str | None = None,
-        config_override: dict[str, Any] | None = None,
+        config_override: Mapping[str, Any] | None = None,
     ) -> list[str]:
         raise NotImplementedError

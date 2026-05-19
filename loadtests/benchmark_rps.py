@@ -8,11 +8,11 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import requests
-
 
 SCENARIO_TARGET_NAMES = {
     "optimize_hot": "POST /optimize [hot]",
@@ -107,17 +107,27 @@ def _fmt(value: float) -> str:
 
 
 def _fetch_auth_token(host: str, username: str, password: str) -> str:
-    response = requests.post(
-        f"{host.rstrip('/')}/auth/login",
-        json={"username": username, "password": password},
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    token = str(payload.get("access_token") or "").strip()
-    if not token:
-        raise RuntimeError("Benchmark login did not return access_token")
-    return token
+    last_error: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            response = requests.post(
+                f"{host.rstrip('/')}/auth/login",
+                json={"username": username, "password": password},
+                timeout=60,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            token = str(payload.get("access_token") or "").strip()
+            if not token:
+                raise RuntimeError("Benchmark login did not return access_token")
+            return token
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == 5:
+                break
+            time.sleep(min(10, attempt * 2))
+
+    raise RuntimeError(f"Benchmark login failed after retries: {last_error}")
 
 
 def _run_scenario(args: argparse.Namespace, scenario: str, outdir: Path) -> list[RunResult]:

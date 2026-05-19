@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from cache.ttl_cache import SharedTTLCache
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 
 def _canonical_json(payload: Any) -> str:
@@ -88,7 +91,7 @@ def build_prompt_collection_cache_key(
     return f"{PROMPT_CACHE_PREFIX}{_sha256_text(_canonical_json(payload))}"
 
 
-def build_optimization_cache_key(fields: dict[str, str | None], config: dict[str, Any], backend_name: str) -> str:
+def build_optimization_cache_key(fields: Mapping[str, str | None], config: Mapping[str, Any], backend_name: str) -> str:
     token = _normalize_text(config.get("effective_llm_api_token"))
     normalized_config = dict(config)
     normalized_config["effective_llm_api_token_fingerprint"] = _sha256_text(token) if token else ""
