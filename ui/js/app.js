@@ -980,7 +980,7 @@ createApp({
         gp_profile: cfg.runtime_gp_profile || cfg.effective_gp_profile || "fast",
         llm_provider: cfg.runtime_llm_provider || cfg.effective_llm_provider || "ollama",
         llm_model: cfg.runtime_llm_model || cfg.effective_llm_model || "qwen2.5:0.5b",
-        llm_base_url: cfg.runtime_llm_base_url || cfg.effective_llm_base_url || "http://127.0.0.1:11434",
+        llm_base_url: cfg.runtime_llm_base_url || cfg.effective_llm_base_url || getProviderDefaultBaseUrl(cfg.runtime_llm_provider || cfg.effective_llm_provider),
         llm_timeout_seconds: cfg.runtime_llm_timeout_seconds || cfg.effective_llm_timeout_seconds || 300,
         llm_api_token: "",  // Never populate token from response for security
         effective_has_llm_api_token: cfg.effective_has_llm_api_token || false,

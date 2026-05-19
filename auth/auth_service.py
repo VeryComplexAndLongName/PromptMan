@@ -81,6 +81,9 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     if not user or not user.is_active:
         return None
     stored_hash = decrypt_secret(user.password_hash_encrypted)
+    if stored_hash is None:
+        logger.error("auth.decrypt.failed cannot decrypt password hash for username={}", username)
+        return None
     if not verify_password(password, stored_hash):
         return None
     return user
