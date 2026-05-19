@@ -147,6 +147,29 @@ Session behavior:
 - The UI refreshes the session automatically on `401` caused by an expired access token.
 - The UI also schedules a proactive refresh 1-3 minutes before access token expiry.
 
+### ⚠️ Important: Set PROMPTMAN_KEY for Persistent Deployments
+
+The application encrypts password hashes at rest using the `PROMPTMAN_KEY` environment variable. **For persistent deployments (non-development), you MUST set this variable to a consistent, secure value.**
+
+If `PROMPTMAN_KEY` is not set, the app uses a default key. This means:
+- **Login will fail with "Invalid credentials"** if the app restarts and the key changes
+- **Password hashes stored with one key cannot be decrypted with a different key**
+
+**Setup:**
+
+```bash
+# Generate a secure random key (Linux/Mac)
+export PROMPTMAN_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+
+# Or on Windows PowerShell
+$env:PROMPTMAN_KEY = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+
+# Then start the app
+python -m uvicorn main:app
+```
+
+Store this key securely in your deployment environment (e.g., GitHub Secrets, Azure Key Vault, .env file in production).
+
 ## RBAC And Access Model
 
 - `admin`
@@ -339,8 +362,11 @@ GET /optimize/providers/{provider}/models
   - optional first-run admin username override
 - `BOOTSTRAP_ADMIN_PASSWORD`
   - optional first-run admin password override
-- `PROMPTMAN_KEY`
-  - encryption/signing key; set this explicitly for persistent deployments (especially Docker)
+- `PROMPTMAN_KEY` ⚠️ **IMPORTANT**
+  - encryption key for password hashes; **MUST be set and kept consistent for persistent deployments**
+  - if not set, uses a default key (development only)
+  - login will fail with "Invalid credentials" if the key changes between app restarts
+  - see [First Run And Authentication](#first-run-and-authentication) for setup instructions
 - `PROMPTMAN_KEY_PREVIOUS`
   - optional comma-separated list of older keys used for decryption fallback during key rotation/migration
 - `OPTIMIZER_BACKEND`
