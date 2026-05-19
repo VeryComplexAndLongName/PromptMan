@@ -2,6 +2,12 @@
 
 Prompt Man: FastAPI + Vue app for storing, versioning, and optimizing prompts.
 
+Prompt Man is **REST API-first**: the primary product surface is the HTTP API, and the application architecture is optimized around API workflows.
+
+The built-in UI is intentionally a secondary feature: a simple, convenient client for quick operations on top of the same REST API.
+
+The project is aimed at small and medium teams that need concurrent multi-user access, role-based controls, and predictable API behavior under shared load.
+
 ![Main Program Purpose](screen2.png)
 
 ## Program Snapshot
@@ -12,6 +18,11 @@ Prompt Man: FastAPI + Vue app for storing, versioning, and optimizing prompts.
 ![Screenshot 2](4.png)
 
 ## Key Features
+
+- **REST API-first** architecture with API endpoints as the primary integration surface.
+- **REST API-first** workflow for automation, integrations, and CI/CD usage.
+- UI as a secondary, intentionally simple and convenient client over the same REST API.
+- Designed for small and medium teams with concurrent access needs and RBAC.
 
 - Prompt storage by `project` + `name` with immutable version history.
 - Structured prompt fields: `role`, `task`, `context`, `constraints`, `output_format`, `examples`.
@@ -165,6 +176,8 @@ The database is normalized internally while the external prompt API still works 
 Deleting a project cascades to related prompt and access rows.
 
 ## UI Overview
+
+UI is deliberately not the main product surface. Prompt Man is **REST API-first**, and the UI is intentionally kept simple and convenient as a companion client.
 
 ### Browse Tab
 
@@ -448,6 +461,8 @@ mypy .
 
 This project includes repeatable load testing based on Locust and manifest-backed chart generation.
 The harness now benchmarks four paths: the general mixed workload, a cache-heavy workload that repeatedly hits shared prompt-read and optimization-cache paths, a dedicated hot optimization workload, and a cold optimization workload that intentionally bypasses the optimization cache.
+
+Load-test scenarios (including concurrent users at 10/20/40 levels) are intended to validate behavior for small and medium team usage patterns with simultaneous access.
 
 ### Run benchmark
 
