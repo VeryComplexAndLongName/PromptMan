@@ -436,6 +436,92 @@ Each version response includes:
   - `role`, `task`, `context`, `constraints`, `output_format`, `examples`
 - Duplicate version content returns `409 Conflict`.
 
+## Scaling And Database
+
+By default the application uses **SQLite** — no installation required, zero configuration, and it works out of the box for small teams (up to ~20–30 concurrent users on a single host).
+
+For higher load, multi-instance deployments, or production environments, switch to **PostgreSQL** (or any other SQLAlchemy-supported database: MySQL, MariaDB, etc.). The application code does not change — only `DATABASE_URL`.
+
+### Horizontal Scaling With PostgreSQL
+
+```
+                        ┌─────────────────────────────────────┐
+                        │           Load Balancer             │
+                        │    (nginx / Traefik / AWS ALB)      │
+                        └───────┬──────────────┬──────────────┘
+                                │              │
+                    ┌───────────▼───┐      ┌───▼───────────┐
+                    │  prompt-man   │      │  prompt-man   │
+                    │  instance 1   │      │  instance 2   │
+                    │  (Docker)     │      │  (Docker)     │
+                    └───────┬───────┘      └───────┬───────┘
+                            │                      │
+                            └──────────┬───────────┘
+                                       │
+                              ┌────────▼────────┐
+                              │   PostgreSQL    │
+                              │  (shared DB)    │
+                              └─────────────────┘
+```
+
+SQLite is a single-file database accessed by one process at a time — horizontal scaling with SQLite is not possible.
+PostgreSQL is a network database that all instances connect to simultaneously.
+
+### Switching From SQLite To PostgreSQL
+
+**1. Install the driver** (add to `requirements.txt`):
+
+```
+psycopg2-binary
+```
+
+Or for async support:
+
+```
+asyncpg
+```
+
+**2. Create a PostgreSQL database and user:**
+
+```sql
+CREATE DATABASE promptman;
+CREATE USER promptman_user WITH ENCRYPTED PASSWORD 'your-strong-password';
+GRANT ALL PRIVILEGES ON DATABASE promptman TO promptman_user;
+```
+
+**3. Set `DATABASE_URL`** via environment variable:
+
+```
+DATABASE_URL=postgresql://promptman_user:your-strong-password@db-host:5432/promptman
+```
+
+For Docker:
+
+```powershell
+docker run --name prompt-man --restart unless-stopped -p 8000:8000 `
+  -e DATABASE_URL=postgresql://promptman_user:your-strong-password@db-host:5432/promptman `
+  -e PROMPTMAN_KEY="your-long-stable-secret" `
+  verycomplexandlongname/prompt-man:latest
+```
+
+**4. Start the application — no further steps needed.**
+
+The application creates and migrates the entire database schema automatically on startup via Alembic. You do not need to prepare the schema, create tables, or run any SQL scripts manually.
+
+```
+[startup] Running Alembic migrations...
+[startup] migrations done  ← schema is ready
+[startup] Application is ready to serve requests
+```
+
+### Database URL Reference
+
+| Database   | Example `DATABASE_URL`                                              |
+|------------|---------------------------------------------------------------------|
+| SQLite     | `sqlite:///./prompts.db`                                            |
+| PostgreSQL | `postgresql://user:password@host:5432/dbname`                       |
+| MySQL      | `mysql+pymysql://user:password@host:3306/dbname`                    |
+
 ## Notes For Operators
 
 - The UI and API expose prompt projects by name for usability.
