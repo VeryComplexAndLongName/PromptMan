@@ -1,0 +1,118 @@
+{
+  "scenarios": [
+    "mixed",
+    "cache",
+    "optimize_hot",
+    "optimize_cold"
+  ],
+  "results": [
+    {
+      "scenario": "mixed",
+      "users": 10,
+      "requests_per_s": 33.40169936083167,
+      "failure_rate": 0.0,
+      "p95_ms": 67.0,
+      "avg_ms": 40.87223991431404,
+      "passed": true
+    },
+    {
+      "scenario": "mixed",
+      "users": 20,
+      "requests_per_s": 57.00252692771164,
+      "failure_rate": 0.0,
+      "p95_ms": 180.0,
+      "avg_ms": 57.75627556181178,
+      "passed": true
+    },
+    {
+      "scenario": "mixed",
+      "users": 40,
+      "requests_per_s": 60.617113351173394,
+      "failure_rate": 0.0,
+      "p95_ms": 690.0,
+      "avg_ms": 264.264345828777,
+      "passed": false
+    },
+    {
+      "scenario": "cache",
+      "users": 10,
+      "requests_per_s": 101.92505011069518,
+      "failure_rate": 0.0,
+      "p95_ms": 19.0,
+      "avg_ms": 10.845872206911288,
+      "passed": true
+    },
+    {
+      "scenario": "cache",
+      "users": 20,
+      "requests_per_s": 186.39369632857841,
+      "failure_rate": 0.0,
+      "p95_ms": 28.0,
+      "avg_ms": 14.648941943761983,
+      "passed": true
+    },
+    {
+      "scenario": "cache",
+      "users": 40,
+      "requests_per_s": 243.6223845218938,
+      "failure_rate": 0.0,
+      "p95_ms": 87.0,
+      "avg_ms": 51.00472133483273,
+      "passed": true
+    },
+    {
+      "scenario": "optimize_hot",
+      "users": 10,
+      "requests_per_s": 19.757322343225336,
+      "failure_rate": 0.0,
+      "p95_ms": 20.0,
+      "avg_ms": 13.518698916443546,
+      "passed": true
+    },
+    {
+      "scenario": "optimize_hot",
+      "users": 20,
+      "requests_per_s": 37.144558369695574,
+      "failure_rate": 0.0,
+      "p95_ms": 47.0,
+      "avg_ms": 15.613799424365613,
+      "passed": true
+    },
+    {
+      "scenario": "optimize_hot",
+      "users": 40,
+      "requests_per_s": 70.68572057553776,
+      "failure_rate": 0.0,
+      "p95_ms": 43.0,
+      "avg_ms": 18.169772875068006,
+      "passed": true
+    },
+    {
+      "scenario": "optimize_cold",
+      "users": 10,
+      "requests_per_s": 0.39290696393885094,
+      "failure_rate": 0.0,
+      "p95_ms": 13000.0,
+      "avg_ms": 7485.714840010041,
+      "passed": false
+    },
+    {
+      "scenario": "optimize_cold",
+      "users": 20,
+      "requests_per_s": 0.0,
+      "failure_rate": 1.0,
+      "p95_ms": Infinity,
+      "avg_ms": Infinity,
+      "passed": false
+    },
+    {
+      "scenario": "optimize_cold",
+      "users": 40,
+      "requests_per_s": 0.0,
+      "failure_rate": 1.0,
+      "p95_ms": Infinity,
+      "avg_ms": Infinity,
+      "passed": false
+    }
+  ]
+}

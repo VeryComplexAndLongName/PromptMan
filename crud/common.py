@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def normalize_tags(tags: list[str] | None) -> list[str]:

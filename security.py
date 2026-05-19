@@ -45,6 +45,12 @@ _CIPHER = _build_cipher(_ACTIVE_SECRET)
 _PREVIOUS_CIPHERS = [_build_cipher(secret) for secret in _previous_machine_secrets() if secret != _ACTIVE_SECRET]
 _TOKEN_SECRET = hashlib.sha256(_derive_key("token", _ACTIVE_SECRET)).digest()
 
+__all__ = [
+    "ACCESS_TOKEN_TTL_SECONDS",
+    "REFRESH_TOKEN_TTL_SECONDS",
+    "time",
+]
+
 
 def encrypt_secret(value: str | None) -> str | None:
     if not value or not value.strip():

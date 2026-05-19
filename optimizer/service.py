@@ -4,26 +4,39 @@ import base64
 import hashlib
 import os
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
-from optimizer.result import OptimizationResult
-from optimizer.errors import BackendOperationTimeoutError
-from optimizer.base import PromptOptimizerBackend
-from optimizer.leo_backend import LeoPromptOptimizerBackend
-from optimizer.utils import (
-    _normalize_text,
-    _build_full_prompt,
-    _heuristic_improve,
-    _extract_prefixed_section,
-    _build_backend_failure_note,
-    _parse_structured_response,
-    _run_with_timeout,
+from cache.shared_cache import (
+    OPTIMIZATION_CACHE_TTL_SECONDS,
+    build_optimization_cache_key,
+    cache_get_or_set,
 )
-from cache.shared_cache import OPTIMIZATION_CACHE_TTL_SECONDS, build_optimization_cache_key, cache_get_or_set
+from optimizer.leo_backend import LeoPromptOptimizerBackend
+from optimizer.result import OptimizationResult
+from optimizer.utils import _normalize_text, _parse_structured_response
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from optimizer.base import PromptOptimizerBackend
 
 _runtime_config_lock = Lock()
+
+__all__ = [
+    "LeoPromptOptimizerBackend",
+    "OptimizationResult",
+    "_normalize_text",
+    "_parse_structured_response",
+    "build_optimizer_config",
+    "get_active_optimizer_backend",
+    "get_active_optimizer_backend_name",
+    "get_runtime_optimizer_config",
+    "list_available_models",
+    "optimize_prompt_with_active_backend",
+    "set_runtime_optimizer_config",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +86,8 @@ _runtime_optimize_config: dict[str, Any] = {
 }
 
 
-def build_optimizer_config(overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_optimizer_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    source: Mapping[str, Any]
     if overrides is None:
         with _runtime_config_lock:
             source = dict(_runtime_optimize_config)
@@ -184,11 +198,11 @@ def get_active_optimizer_backend() -> PromptOptimizerBackend:
     return _BACKEND_REGISTRY[get_active_optimizer_backend_name()]
 
 
-def optimize_prompt_with_active_backend(fields: dict[str, str | None], config_override: dict[str, Any] | None = None) -> OptimizationResult:
+def optimize_prompt_with_active_backend(fields: Mapping[str, str | None], config_override: Mapping[str, Any] | None = None) -> OptimizationResult:
     backend = get_active_optimizer_backend()
     config = build_optimizer_config(config_override)
     cache_key = build_optimization_cache_key(fields, config, backend.name)
-    return cache_get_or_set(cache_key, OPTIMIZATION_CACHE_TTL_SECONDS, lambda: backend.optimize(fields, config))
+    return cast("OptimizationResult", cache_get_or_set(cache_key, OPTIMIZATION_CACHE_TTL_SECONDS, lambda: backend.optimize(fields, config)))
 
 
 def list_available_models(
@@ -197,7 +211,7 @@ def list_available_models(
     base_url: str | None = None,
     timeout_seconds: int = 5,
     api_token: str | None = None,
-    config_override: dict[str, Any] | None = None,
+    config_override: Mapping[str, Any] | None = None,
 ) -> list[str]:
     backend = get_active_optimizer_backend()
     return backend.list_models(

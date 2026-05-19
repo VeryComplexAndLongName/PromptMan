@@ -1,3 +1,5 @@
+import datetime
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -97,7 +99,7 @@ def update_user(
     role: str | None = None,
     is_active: bool | None = None,
     projects: list[str] | None = None,
-    password_changed_at=None,
+    password_changed_at: datetime.datetime | None = None,
 ) -> User:
     if username is not None:
         user.username = username.strip()

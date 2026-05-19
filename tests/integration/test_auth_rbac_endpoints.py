@@ -1,5 +1,8 @@
-import security
+from typing import Any
+
 from fastapi.testclient import TestClient
+
+import security
 
 
 def login_as(client: TestClient, username: str, password: str) -> str:
@@ -8,7 +11,7 @@ def login_as(client: TestClient, username: str, password: str) -> str:
     return response.json()["access_token"]
 
 
-def login_bundle(client: TestClient, username: str, password: str) -> dict:
+def login_bundle(client: TestClient, username: str, password: str) -> dict[str, Any]:
     response = client.post("/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200
     return response.json()
@@ -299,7 +302,7 @@ def test_admin_can_manage_projects(client):  # type: ignore[no-untyped-def]
 def test_admin_can_list_roles(client):  # type: ignore[no-untyped-def]
     response = client.get("/roles")
     assert response.status_code == 200
-    assert response.json() == [{"id": 1, "name": "admin"}, {"id": 2, "name": "developer"}, {"id": 3, "name": "viewer"}]
+    assert [item["name"] for item in response.json()] == ["admin", "developer", "viewer"]
 
 
 def test_deleting_project_cascades_prompts_and_access(client, sample_prompt_payload):  # type: ignore[no-untyped-def]

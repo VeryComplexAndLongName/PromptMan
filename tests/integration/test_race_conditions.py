@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -13,15 +12,24 @@ import main
 from database import Base
 from main import app, get_db
 from models import Prompt, Tag
+from tests.conftest import TEST_DATABASE_URL
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 def test_http_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path: Path):  # type: ignore[no-untyped-def]
-    db_path = tmp_path / "race_http.db"
-    engine = create_engine(
-        f"sqlite:///{db_path}",
-        connect_args={"check_same_thread": False},
-    )
+    if TEST_DATABASE_URL:
+        engine = create_engine(TEST_DATABASE_URL, pool_pre_ping=True)
+    else:
+        db_path = tmp_path / "race_http.db"
+        engine = create_engine(
+            f"sqlite:///{db_path}",
+            connect_args={"check_same_thread": False},
+        )
     testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
     def override_get_db() -> Iterator[Session]:
@@ -32,10 +40,12 @@ def test_http_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path
             db.close()
 
     original_session_local = main.SessionLocal
+    original_startup_session_local = main.StartupSessionLocal
     original_init_database = main.init_database
 
     try:
         main.SessionLocal = testing_session_local
+        main.StartupSessionLocal = testing_session_local
         main.init_database = lambda bind=None: Base.metadata.create_all(bind=engine)
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[auth_service.get_db_session] = override_get_db
@@ -90,6 +100,7 @@ def test_http_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path
             verify_session.close()
     finally:
         main.SessionLocal = original_session_local
+        main.StartupSessionLocal = original_startup_session_local
         main.init_database = original_init_database
         app.dependency_overrides.clear()
         engine.dispose()

@@ -1,4 +1,5 @@
 import sys
+
 print("Testing imports...")
 try:
     from models import Base, User
@@ -8,7 +9,7 @@ except Exception as e:
     sys.exit(1)
 
 try:
-    from schemas import AuthResponse, UserLogin
+    from schemas import AuthResponse
     print(f"✓ schemas imported, AuthResponse={AuthResponse}")
 except Exception as e:
     print(f"✗ schemas error: {e}")
