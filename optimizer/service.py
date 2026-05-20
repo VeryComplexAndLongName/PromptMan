@@ -14,6 +14,7 @@ from cache.shared_cache import (
     cache_get_or_set,
 )
 from optimizer.leo_backend import LeoPromptOptimizerBackend
+from optimizer.provider_catalog import get_llm_provider_models, list_llm_provider_entries
 from optimizer.result import OptimizationResult
 from optimizer.utils import _normalize_text, _parse_structured_response
 
@@ -32,6 +33,7 @@ __all__ = [
     "build_optimizer_config",
     "get_active_optimizer_backend",
     "get_active_optimizer_backend_name",
+    "get_llm_provider_catalog",
     "get_runtime_optimizer_config",
     "list_available_models",
     "optimize_prompt_with_active_backend",
@@ -109,15 +111,9 @@ def build_optimizer_config(overrides: Mapping[str, Any] | None = None) -> dict[s
     env_timeout_seconds = int(env_timeout_raw) if env_timeout_raw.isdigit() else None
 
     effective_provider = (runtime_provider or env_provider or "openai").strip().lower()
-    default_model_by_provider = {
-        "ollama": "qwen2.5:0.5b",
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-3-haiku",
-        "groq": "llama3-8b-8192",
-        "gemini": "gemini-1.5-flash",
-        "mistral": "mistral-small-latest",
-    }
-    effective_model = (runtime_model or env_model or default_model_by_provider.get(effective_provider, "gpt-4o-mini")).strip()
+    default_models = get_llm_provider_models(effective_provider)
+    fallback_model = default_models[0] if default_models else "gpt-4o-mini"
+    effective_model = (runtime_model or env_model or fallback_model).strip()
     effective_base_url = (runtime_base_url or env_base_url or "").strip()
     effective_timeout_seconds = int(runtime_timeout_seconds or env_timeout_seconds or 120)
     effective_api_token = runtime_api_token or _decrypt_token(runtime_api_token_encrypted or env_api_token_encrypted)
@@ -175,6 +171,19 @@ def set_runtime_optimizer_config(
 def get_runtime_optimizer_config() -> dict[str, Any]:
     with _runtime_config_lock:
         return build_optimizer_config(dict(_runtime_optimize_config))
+
+
+def get_llm_provider_catalog() -> list[dict[str, Any]]:
+    return [
+        {
+            "key": entry.key,
+            "label": entry.label,
+            "base_url": entry.base_url,
+            "requires_api_token": entry.requires_api_token,
+            "models": list(entry.models),
+        }
+        for entry in list_llm_provider_entries()
+    ]
 
 
 # ---------------------------------------------------------------------------

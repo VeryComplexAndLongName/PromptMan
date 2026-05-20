@@ -47,6 +47,15 @@ def update_project(db: Session, project: Project, *, name: str) -> Project:
 
 
 def delete_project(db: Session, project: Project) -> None:
+    # Explicitly delete all related prompts and versions first
+    # (ensures cascade works even if relationships aren't loaded)
+    from models import Prompt, PromptVersion
+    db.query(PromptVersion).filter(
+        PromptVersion.prompt_id.in_(
+            db.query(Prompt.id).filter(Prompt.project_id == project.id)
+        )
+    ).delete(synchronize_session=False)
+    db.query(Prompt).filter(Prompt.project_id == project.id).delete(synchronize_session=False)
     db.delete(project)
     db.commit()
 

@@ -20,10 +20,14 @@ from database import (
 )
 from middleware import ExceptionLoggingMiddleware, RequestLoggingMiddleware
 from models import User
+from optimizer.jobs import cancel_optimization_job, create_optimization_job, get_optimization_job
 from optimizer.service import list_available_models, optimize_prompt_with_active_backend
+from optimizer.service import get_llm_provider_catalog
 from routes import (
     bootstrap_admin_route,
+    cancel_optimize_job_route,
     change_own_password_route,
+    create_optimize_job_route,
     create_project_route,
     create_prompt_route,
     create_user_route,
@@ -34,11 +38,14 @@ from routes import (
     get_auth_status_route,
     get_me_route,
     get_optimize_config_route,
+    get_optimize_job_route,
     get_project_route,
     get_prompt_route,
     get_prompt_version_route,
     get_provider_models_route,
     get_user_route,
+    list_llm_provider_models_route,
+    list_llm_providers_route,
     list_projects_route,
     list_prompts_route,
     list_roles_route,
@@ -60,6 +67,7 @@ from schemas import (
     AuthResponse,
     AuthStatus,
     ChangePasswordRequest,
+    LlmProviderOut,
     OptimizeConfigOut,
     OptimizeConfigUpdate,
     ProjectAccessUpdate,
@@ -68,6 +76,7 @@ from schemas import (
     ProjectUpdate,
     PromptCreate,
     PromptData,
+    PromptOptimizeJobOut,
     PromptOptimizeResponse,
     PromptOut,
     PromptTagsUpdate,
@@ -139,6 +148,11 @@ def serve_ui() -> FileResponse:
 @app.get("/PromptMan_240x240.png", include_in_schema=False)
 def serve_app_icon() -> FileResponse:
     return FileResponse("PromptMan_240x240.png")
+
+
+@app.get("/P_240x240.png", include_in_schema=False)
+def serve_app_icon_new() -> FileResponse:
+    return FileResponse("P_240x240.png")
 
 
 @app.post("/auth/bootstrap-admin", response_model=AuthResponse)
@@ -304,14 +318,56 @@ def optimize_prompt(data: PromptData, db=Depends(get_db), current_user: User = D
     return optimize_prompt_route(data, db, current_user, optimize_prompt_with_active_backend)
 
 
+@app.post("/optimize/jobs", response_model=PromptOptimizeJobOut)
+def create_optimize_job(data: PromptData, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOptimizeJobOut:  # type: ignore[no-untyped-def]
+    return create_optimize_job_route(data, db, current_user, create_optimization_job)
+
+
+@app.get("/optimize/jobs/{job_id}", response_model=PromptOptimizeJobOut)
+def get_optimize_job(job_id: str, current_user: User = Depends(auth_service.get_current_user)) -> PromptOptimizeJobOut:
+    return get_optimize_job_route(job_id, current_user, get_optimization_job)
+
+
+@app.delete("/optimize/jobs/{job_id}", response_model=PromptOptimizeJobOut)
+def cancel_optimize_job(job_id: str, current_user: User = Depends(auth_service.get_current_user)) -> PromptOptimizeJobOut:
+    return cancel_optimize_job_route(job_id, current_user, cancel_optimization_job)
+
+
 @app.get("/optimize/config", response_model=OptimizeConfigOut)
 def get_optimize_config(db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
+    return get_optimize_config_route(db, current_user)
+
+
+@app.get("/llm/config", response_model=OptimizeConfigOut)
+def get_llm_config(db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
     return get_optimize_config_route(db, current_user)
 
 
 @app.put("/optimize/config", response_model=OptimizeConfigOut)
 def update_optimize_config(data: OptimizeConfigUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
     return update_optimize_config_route(data, db, current_user)
+
+
+@app.put("/llm/config", response_model=OptimizeConfigOut)
+def update_llm_config(data: OptimizeConfigUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
+    return update_optimize_config_route(data, db, current_user)
+
+
+@app.get("/llm/providers", response_model=list[LlmProviderOut])
+def list_llm_providers(current_user: User = Depends(auth_service.get_current_user)) -> list[LlmProviderOut]:
+    return list_llm_providers_route(get_llm_provider_catalog)
+
+
+@app.get("/llm/providers/{provider}/models", response_model=list[str])
+def list_llm_provider_models(
+    provider: str,
+    base_url: str | None = Query(None, description="Optional provider base URL override"),
+    api_token: str | None = Query(None, description="Optional API token for authentication"),
+    timeout_seconds: int = Query(5, ge=1, le=30, description="Timeout in seconds for provider model discovery"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth_service.get_current_user),
+) -> list[str]:
+    return list_llm_provider_models_route(provider, base_url, api_token, timeout_seconds, db, current_user, list_available_models)
 
 
 @app.get("/optimize/providers/{provider}/models", response_model=list[str])

@@ -40,27 +40,35 @@ const emptyProjectForm = () => ({
   name: "",
 });
 const defaultUserRoleOptions = ["admin", "developer"];
-const llmProviderConfigs = {
+const initialLlmProviderConfigs = {
   ollama: {
     label: "Ollama (Local)",
     baseUrl: "http://127.0.0.1:11434",
-    models: ["qwen2.5:0.5b", "phi3:mini", "llama3.2:1b", "qwen2.5:1.5b", "gemma2:2b"],
+    requiresApiToken: false,
+    models: [
+      "qwen2.5:3b-instruct-q4_K_M",
+      "qwen2.5:0.5b",
+      "qwen3:4b",
+      "llama3.2:1b",
+      "llama3.2:latest",
+      "llama3.1:latest",
+      "deepseek-r1:latest",
+      "codellama:latest",
+    ],
   },
   openai: {
     label: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
+    requiresApiToken: true,
     models: ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
   },
   anthropic: {
     label: "Anthropic Claude",
     baseUrl: "https://api.anthropic.com",
+    requiresApiToken: true,
     models: ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
   },
 };
-const llmProviderOptions = Object.keys(llmProviderConfigs);
-const defaultLlmModelsByProvider = Object.fromEntries(
-  Object.entries(llmProviderConfigs).map(([key, config]) => [key, config.models])
-);
 
 // Build markdown from decomposed fields
 const buildPromptMarkdown = (fields) => {
@@ -144,9 +152,16 @@ createApp({
     const optimizeEndpoint = ref("/optimize");
     const optimizeConfig = ref(defaultOptimizeConfig());
     const optimizeConfigStatus = ref("");
-    const availableLlmModels = ref([...defaultLlmModelsByProvider.ollama]);
+    const llmProviderConfigs = ref(structuredClone(initialLlmProviderConfigs));
+    const llmProviderOptions = computed(() => Object.keys(llmProviderConfigs.value));
+    const defaultLlmModelsByProvider = computed(() =>
+      Object.fromEntries(Object.entries(llmProviderConfigs.value).map(([key, config]) => [key, config.models]))
+    );
+    const availableLlmModels = ref([...(initialLlmProviderConfigs.ollama?.models || [])]);
     const llmModelsLoading = ref(false);
     const llmModelsLoadError = ref("");
+    const activeOptimizationJobId = ref("");
+    let optimizerPollTimerId = null;
 
     /* admin */
     const roleOptions = ref([...defaultUserRoleOptions, "viewer"]);
@@ -195,7 +210,7 @@ createApp({
       return (currentUser.value.projects || []).length ? currentUser.value.projects.join(", ") : "No assigned projects";
     });
 
-    const nowTime = () => new Date(clockNow.value).toISOString().replace("T", " ").replace("Z", " UTC");
+    const nowTime = () => new Date(Date.now()).toISOString().replace("T", " ").replace("Z", " UTC");
     let tokenRefreshPromise = null;
     let proactiveRefreshTimerId = null;
     let countdownTimerId = null;
@@ -306,6 +321,11 @@ createApp({
       expandedKey.value = null;
       expandedVersions.value = [];
       optimizerModalOpen.value = false;
+      activeOptimizationJobId.value = "";
+      if (optimizerPollTimerId !== null) {
+        window.clearTimeout(optimizerPollTimerId);
+        optimizerPollTimerId = null;
+      }
       users.value = [];
       projects.value = [];
       optimizeConfig.value = defaultOptimizeConfig();
@@ -458,6 +478,7 @@ createApp({
     const initializeAuthenticatedApp = async () => {
       setDefaultActiveTab();
       await fetchPrompts();
+      await loadLlmProviders();
       await loadOptimizeConfig();
       await loadRoles();
       await loadProjects();
@@ -608,7 +629,8 @@ createApp({
     const deleteProjectRecord = async (project) => {
       if (!canWrite.value) return;
       projectsStatus.value = "";
-      if (!window.confirm(`Delete project ${project.name}? All related prompts and access rules will be removed.`)) return;
+      const message = `CAUTION: You are about to delete project "${project.name}" and ALL related prompts with ALL their versions.\n\nThis action cannot be undone.\n\nAre you sure?`;
+      if (!window.confirm(message)) return;
       const res = await apiFetch(`/projects/${project.id}`, { method: "DELETE" });
       if (!res.ok) {
         projectsStatus.value = `Failed to delete project (${res.status})`;
@@ -686,12 +708,180 @@ createApp({
       await loadUsers();
     };
 
-    const pushOptimizerLog = (message, level = "info") => {
+    const pushOptimizerLog = (message, level = "info", ts = null) => {
       optimizerLogs.value.push({
-        ts: nowTime(),
+        ts: ts ? formatUtcDateTime(ts) : nowTime(),
         level,
         message,
       });
+    };
+
+    const clearOptimizationPoll = () => {
+      if (optimizerPollTimerId !== null) {
+        window.clearTimeout(optimizerPollTimerId);
+        optimizerPollTimerId = null;
+      }
+    };
+
+    const applyOptimizationResponse = (data, ts = null) => {
+      optimizerEngine.value = data.engine || "optimizer";
+      optimizerNotes.value = data.notes || [];
+      optimizerElapsedSeconds.value = Number.isFinite(Number(data.elapsed_seconds)) ? Number(data.elapsed_seconds) : null;
+      optimizerStatus.value = optimizerEngine.value.includes("fallback")
+        ? "Optimization finished with fallback"
+        : "Optimization completed";
+
+      pushOptimizerLog(`Completed. Engine: ${optimizerEngine.value}.`, optimizerEngine.value.includes("fallback") ? "warn" : "success", ts);
+      if (optimizerElapsedSeconds.value !== null) {
+        pushOptimizerLog(`Backend elapsed: ${optimizerElapsedSeconds.value.toFixed(2)}s.`, "info", ts);
+      }
+      if (Array.isArray(optimizerNotes.value) && optimizerNotes.value.length) {
+        optimizerNotes.value.forEach((note) => {
+          const level = String(note || "").toLowerCase().includes("failed") ? "warn" : "info";
+          pushOptimizerLog(String(note), level, ts);
+        });
+      }
+
+      optimizedMarkdown.value = data.optimized_markdown || "";
+      optimizedDraft.value = {
+        role: data.optimized?.role || "",
+        task: data.optimized?.task || "",
+        context: data.optimized?.context || "",
+        constraints: data.optimized?.constraints || "",
+        output_format: data.optimized?.output_format || "",
+        examples: data.optimized?.examples || "",
+      };
+    };
+
+    const finalizeOptimizationJob = (job) => {
+      clearOptimizationPoll();
+      activeOptimizationJobId.value = "";
+      optimizerLoading.value = false;
+      const finalTs = job.cancelled_at || job.completed_at || null;
+      const actualStartedTs = job.started_at || job.created_at || null;
+      const runningEntry = optimizerLogs.value.find((entry) => entry.message === "Optimization is running on backend ...");
+      if (runningEntry && actualStartedTs) {
+        runningEntry.ts = formatUtcDateTime(actualStartedTs);
+      }
+
+      if (job.status === "completed" && job.result) {
+        applyOptimizationResponse(job.result, finalTs);
+        return;
+      }
+
+      if (job.status === "cancelled") {
+        optimizerStatus.value = "Optimization cancelled";
+        optimizerError.value = "";
+        pushOptimizerLog(job.error || "Optimization cancelled.", "warn", finalTs);
+        return;
+      }
+
+      optimizerStatus.value = "Optimization failed";
+      optimizerError.value = job.error || "Optimization failed before completion.";
+      pushOptimizerLog(job.error || "Optimization failed before completion.", "error", finalTs);
+    };
+
+    const pollOptimizationJob = async (jobId) => {
+      if (!jobId || activeOptimizationJobId.value !== jobId) {
+        return;
+      }
+
+      let res;
+      try {
+        res = await apiFetch(`/optimize/jobs/${encodeURIComponent(jobId)}`);
+      } catch (err) {
+        clearOptimizationPoll();
+        activeOptimizationJobId.value = "";
+        optimizerLoading.value = false;
+        optimizerStatus.value = "Optimization failed";
+        optimizerError.value = "Unable to query optimization status.";
+        pushOptimizerLog("Unable to query optimization status.", "error");
+        return;
+      }
+
+      if (!res.ok) {
+        let details = "";
+        try {
+          details = await res.text();
+        } catch (err) {
+          details = "";
+        }
+        clearOptimizationPoll();
+        activeOptimizationJobId.value = "";
+        optimizerLoading.value = false;
+        optimizerStatus.value = "Optimization failed";
+        optimizerError.value = `Unable to query optimization status (${res.status}).`;
+        pushOptimizerLog(
+          `Optimization status query failed with HTTP ${res.status}${details ? `: ${details.slice(0, 220)}` : ""}`,
+          "error"
+        );
+        return;
+      }
+
+      const job = await res.json();
+      if (job.status === "running") {
+        optimizerPollTimerId = window.setTimeout(() => {
+          pollOptimizationJob(jobId);
+        }, 1000);
+        return;
+      }
+
+      finalizeOptimizationJob(job);
+    };
+
+    const cancelActiveOptimization = async (closeAfterCancel = false) => {
+      const jobId = activeOptimizationJobId.value;
+      clearOptimizationPoll();
+
+      if (!jobId) {
+        optimizerLoading.value = false;
+        if (closeAfterCancel) {
+          optimizerModalOpen.value = false;
+        }
+        return true;
+      }
+
+      let res;
+      try {
+        res = await apiFetch(`/optimize/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+      } catch (err) {
+        optimizerError.value = "Unable to cancel optimization.";
+        pushOptimizerLog("Unable to cancel optimization.", "error");
+        return false;
+      }
+
+      if (!res.ok) {
+        let details = "";
+        try {
+          details = await res.text();
+        } catch (err) {
+          details = "";
+        }
+        optimizerError.value = `Unable to cancel optimization (${res.status}).`;
+        pushOptimizerLog(
+          `Optimization cancel failed with HTTP ${res.status}${details ? `: ${details.slice(0, 220)}` : ""}`,
+          "error"
+        );
+        return false;
+      }
+
+      const job = await res.json();
+      finalizeOptimizationJob(job);
+      if (closeAfterCancel) {
+        optimizerModalOpen.value = false;
+      }
+      return true;
+    };
+
+    const closeOptimizerModal = async () => {
+      if (optimizerLoading.value && activeOptimizationJobId.value) {
+        const cancelled = await cancelActiveOptimization(true);
+        if (!cancelled) {
+          return;
+        }
+        return;
+      }
+      optimizerModalOpen.value = false;
     };
 
     const normalizePageNumber = (page) => {
@@ -883,12 +1073,12 @@ createApp({
 
     const getDefaultProviderModels = (provider) => {
       const key = String(provider || "").toLowerCase();
-      return [...(defaultLlmModelsByProvider[key] || [])];
+      return [...(defaultLlmModelsByProvider.value[key] || [])];
     };
 
     const getProviderConfig = (provider) => {
       const key = String(provider || "").toLowerCase();
-      return llmProviderConfigs[key] || llmProviderConfigs.ollama;
+      return llmProviderConfigs.value[key] || llmProviderConfigs.value.ollama || initialLlmProviderConfigs.ollama;
     };
 
     const getProviderLabel = (provider) => {
@@ -909,8 +1099,45 @@ createApp({
     };
 
     const modelRequiresToken = (provider = optimizeConfig.value.llm_provider) => {
-      const key = String(provider || "").toLowerCase();
-      return ["openai", "anthropic"].includes(key);
+      return !!getProviderConfig(provider).requiresApiToken;
+    };
+
+    const loadLlmProviders = async () => {
+      try {
+        const res = await apiFetch("/llm/providers");
+        if (!res.ok) {
+          return;
+        }
+        const providers = await res.json();
+        if (!Array.isArray(providers) || !providers.length) {
+          return;
+        }
+
+        const nextConfigs = {};
+        providers.forEach((provider) => {
+          const key = String(provider?.key || "").toLowerCase().trim();
+          if (!key) return;
+          const models = Array.isArray(provider?.models)
+            ? provider.models.filter((m) => typeof m === "string" && m.trim())
+            : [];
+          nextConfigs[key] = {
+            label: String(provider?.label || key),
+            baseUrl: String(provider?.base_url || ""),
+            requiresApiToken: Boolean(provider?.requires_api_token),
+            models,
+          };
+        });
+
+        if (Object.keys(nextConfigs).length) {
+          llmProviderConfigs.value = nextConfigs;
+        }
+      } catch (_) {
+      }
+    };
+
+    const isEmbeddingLikeModel = (modelName) => {
+      const normalized = String(modelName || "").toLowerCase();
+      return normalized.includes("embed") || normalized.includes("embedding") || normalized.includes("snowflake-arctic");
     };
 
     const loadAvailableLlmModels = async (provider = optimizeConfig.value.llm_provider, preserveCurrentModel = true) => {
@@ -928,28 +1155,37 @@ createApp({
         if ((optimizeConfig.value.llm_api_token || "").trim()) {
           params.set("api_token", optimizeConfig.value.llm_api_token.trim());
         }
-        params.set("timeout_seconds", "5");
+        params.set("timeout_seconds", "10");
 
-        const res = await apiFetch(`/optimize/providers/${encodeURIComponent(selectedProvider)}/models?${params.toString()}`);
+        const res = await apiFetch(`/llm/providers/${encodeURIComponent(selectedProvider)}/models?${params.toString()}`);
         if (!res.ok) {
-          llmModelsLoadError.value = `Failed to load provider models (${res.status})`;
+          llmModelsLoadError.value = `Failed to load provider models (HTTP ${res.status}). Using fallback list.`;
           availableLlmModels.value = fallbackModels;
         } else {
           const discovered = await res.json();
           const clean = Array.isArray(discovered)
             ? discovered.filter((m) => typeof m === "string" && m.trim())
             : [];
-          availableLlmModels.value = clean.length ? clean : fallbackModels;
-          if (!clean.length) {
-            llmModelsLoadError.value = "No models discovered for selected provider. Showing fallback list.";
+          if (clean.length > 0) {
+            availableLlmModels.value = clean;
+            console.log(`[Models] Loaded ${clean.length} models from ${selectedProvider}:`, clean);
+          } else {
+            llmModelsLoadError.value = `No models discovered for ${selectedProvider}. Using fallback list. Check if provider is running.`;
+            availableLlmModels.value = fallbackModels;
           }
         }
       } catch (err) {
-        llmModelsLoadError.value = "Unable to connect to provider for model discovery.";
+        llmModelsLoadError.value = `Unable to connect to ${selectedProvider}. Using fallback list: ${err.message}`;
+        console.error(`[Models] Error fetching ${selectedProvider} models:`, err);
         availableLlmModels.value = fallbackModels;
       } finally {
         const currentModel = (optimizeConfig.value.llm_model || "").trim();
-        if (preserveCurrentModel && currentModel && !availableLlmModels.value.includes(currentModel)) {
+        const canPreserveCurrentModel =
+          preserveCurrentModel &&
+          currentModel &&
+          !availableLlmModels.value.includes(currentModel) &&
+          !(selectedProvider === "ollama" && isEmbeddingLikeModel(currentModel));
+        if (canPreserveCurrentModel) {
           availableLlmModels.value = [currentModel, ...availableLlmModels.value];
         }
         if (!currentModel || !availableLlmModels.value.includes(currentModel)) {
@@ -966,7 +1202,7 @@ createApp({
         optimizeConfig.value = defaultOptimizeConfig();
         return;
       }
-      const res = await apiFetch("/optimize/config");
+      const res = await apiFetch("/llm/config");
       if (!res.ok) {
         optimizeConfigStatus.value = "Failed to load optimize config (" + res.status + ")";
         return;
@@ -1000,7 +1236,7 @@ createApp({
         llm_timeout_seconds: Number(optimizeConfig.value.llm_timeout_seconds) || 300,
         llm_api_token: optimizeConfig.value.llm_api_token || null,
       };
-      const res = await apiFetch("/optimize/config", {
+      const res = await apiFetch("/llm/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1025,6 +1261,8 @@ createApp({
         optimizerError.value = "Viewer role is read-only.";
         return;
       }
+      clearOptimizationPoll();
+      activeOptimizationJobId.value = "";
       optimizerLoading.value = true;
       optimizerError.value = "";
       optimizerStatus.value = "Optimization started";
@@ -1055,16 +1293,13 @@ createApp({
       pushOptimizerLog(
         `Using provider=${optimizeConfig.value.effective_llm_provider || optimizeConfig.value.llm_provider}, model=${optimizeConfig.value.effective_llm_model || optimizeConfig.value.llm_model}, timeout=${optimizeConfig.value.effective_llm_timeout_seconds || optimizeConfig.value.llm_timeout_seconds}s.`
       );
-      pushOptimizerLog(`Sending request to ${endpoint} ...`);
+      pushOptimizerLog(`Creating optimization job via /optimize/jobs for target ${endpoint} ...`);
 
       let res;
-      const optimizeTimeoutSeconds = Number(
-        optimizeConfig.value.effective_llm_timeout_seconds || optimizeConfig.value.llm_timeout_seconds || 300
-      );
       const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), Math.max(5000, optimizeTimeoutSeconds * 1000 + 10000));
+      const timeoutId = window.setTimeout(() => controller.abort(), 20000);
       try {
-        res = await apiFetch(endpoint, {
+        res = await apiFetch("/optimize/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(promptPayload(fields)),
@@ -1075,8 +1310,8 @@ createApp({
         optimizerLoading.value = false;
         optimizerStatus.value = "Optimization failed";
         if (err && err.name === "AbortError") {
-          optimizerError.value = `Optimization timed out after ${optimizeTimeoutSeconds}s.`;
-          pushOptimizerLog(`Request aborted after ${optimizeTimeoutSeconds}s timeout.`, "error");
+          optimizerError.value = "Optimization job creation timed out.";
+          pushOptimizerLog("Optimization job creation timed out.", "error");
         } else {
           optimizerError.value = "Optimization request failed before response.";
           pushOptimizerLog("Request failed: network/server error.", "error");
@@ -1102,47 +1337,34 @@ createApp({
         return;
       }
 
-      pushOptimizerLog(`Response received (HTTP ${res.status}). Parsing payload ...`);
+      pushOptimizerLog(`Job creation response received (HTTP ${res.status}). Parsing payload ...`);
 
-      let data;
+      let job;
       try {
-        data = await res.json();
+        job = await res.json();
       } catch (err) {
         optimizerLoading.value = false;
         optimizerStatus.value = "Optimization failed";
-        optimizerError.value = "Optimization response is not valid JSON.";
-        pushOptimizerLog("Response parse failed: invalid JSON payload.", "error");
+        optimizerError.value = "Optimization job response is not valid JSON.";
+        pushOptimizerLog("Response parse failed: invalid optimization job payload.", "error");
         return;
       }
 
-      optimizerLoading.value = false;
-      optimizerEngine.value = data.engine || "optimizer";
-      optimizerNotes.value = data.notes || [];
-      optimizerElapsedSeconds.value = Number.isFinite(Number(data.elapsed_seconds)) ? Number(data.elapsed_seconds) : null;
-      optimizerStatus.value = optimizerEngine.value.includes("fallback")
-        ? "Optimization finished with fallback"
-        : "Optimization completed";
-
-      pushOptimizerLog(`Completed. Engine: ${optimizerEngine.value}.`, optimizerEngine.value.includes("fallback") ? "warn" : "success");
-      if (optimizerElapsedSeconds.value !== null) {
-        pushOptimizerLog(`Backend elapsed: ${optimizerElapsedSeconds.value.toFixed(2)}s.`);
-      }
-      if (Array.isArray(optimizerNotes.value) && optimizerNotes.value.length) {
-        optimizerNotes.value.forEach((note) => {
-          const level = String(note || "").toLowerCase().includes("failed") ? "warn" : "info";
-          pushOptimizerLog(String(note), level);
-        });
+      activeOptimizationJobId.value = String(job.job_id || "");
+      if (!activeOptimizationJobId.value) {
+        optimizerLoading.value = false;
+        optimizerStatus.value = "Optimization failed";
+        optimizerError.value = "Optimization job id is missing in backend response.";
+        pushOptimizerLog("Optimization job id is missing in backend response.", "error");
+        return;
       }
 
-      optimizedMarkdown.value = data.optimized_markdown || "";
-      optimizedDraft.value = {
-        role: data.optimized.role || "",
-        task: data.optimized.task || "",
-        context: data.optimized.context || "",
-        constraints: data.optimized.constraints || "",
-        output_format: data.optimized.output_format || "",
-        examples: data.optimized.examples || "",
-      };
+      pushOptimizerLog(`Optimization job created: ${activeOptimizationJobId.value}.`, "success", job.created_at || null);
+      pushOptimizerLog("Optimization is running on backend ...", "info", job.started_at || job.created_at || null);
+      optimizerStatus.value = "Optimization is running";
+      optimizerPollTimerId = window.setTimeout(() => {
+        pollOptimizationJob(activeOptimizationJobId.value);
+      }, 600);
     };
 
     const reoptimizePrompt = async () => {
@@ -1278,6 +1500,7 @@ createApp({
 
     onBeforeUnmount(() => {
       clearProactiveRefresh();
+      clearOptimizationPoll();
       if (countdownTimerId !== null) {
         window.clearInterval(countdownTimerId);
         countdownTimerId = null;
@@ -1303,7 +1526,7 @@ createApp({
       deletePrompt,
       optimizeFromCreate,
       optimizeFromBrowse,
-      applyOptimizedPrompt, reoptimizePrompt, saveOptimizeConfig, loadAvailableLlmModels, updateProviderBaseUrl, getProviderLabel, modelRequiresToken,
+      applyOptimizedPrompt, reoptimizePrompt, saveOptimizeConfig, loadAvailableLlmModels, updateProviderBaseUrl, getProviderLabel, modelRequiresToken, closeOptimizerModal,
       submitAuth, logout, createProjectRecord, beginEditProject, cancelProjectEdit, saveProjectEdit, deleteProjectRecord,
       createUserAccount, beginEditUser, cancelUserEdit, saveUserEdit, deleteUserAccount, loadUsers, loadProjects,
       toggleProjectSelection, isProjectSelected,
@@ -1318,7 +1541,7 @@ createApp({
   template: `
     <div v-if="!authReady" class="auth-shell">
       <div class="auth-card">
-        <h1 class="app-title"><img src="/PromptMan_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
+        <h1 class="app-title"><img src="/P_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
         <span v-if="appVersion" style="display:block;font-size:0.78rem;color:#9ca3af;margin:-6px 0 6px">v{{ appVersion }}</span>
         <p class="subtitle">Loading session...</p>
       </div>
@@ -1326,7 +1549,7 @@ createApp({
 
     <div v-else-if="!isAuthenticated" class="auth-shell">
       <div class="auth-card">
-        <h1 class="app-title"><img src="/PromptMan_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
+        <h1 class="app-title"><img src="/P_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
         <span v-if="appVersion" style="display:block;font-size:0.78rem;color:#9ca3af;margin:-6px 0 6px">v{{ appVersion }}</span>
         <p class="subtitle">{{ authBootstrapRequired ? 'Create the first admin account for this workspace.' : 'Sign in to access prompts and personal optimization config.' }}</p>
         <p class="auth-helper">Access token lifetime is 30 minutes. The UI refreshes the session automatically while the refresh token is still valid.</p>
@@ -1351,7 +1574,7 @@ createApp({
     <header style="margin-bottom:4px">
       <div class="header-topline">
         <div>
-          <h1 class="app-title"><img src="/PromptMan_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan <span v-if="appVersion" style="font-size:0.55em;color:#9ca3af;font-weight:400;vertical-align:middle">v{{ appVersion }}</span></h1>
+          <h1 class="app-title"><img src="/P_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan <span v-if="appVersion" style="font-size:0.55em;color:#9ca3af;font-weight:400;vertical-align:middle">v{{ appVersion }}</span></h1>
           <p class="subtitle">Versioned prompts with tags, markdown, and per-user optimization config.</p>
         </div>
         <div class="auth-banner">
@@ -1378,7 +1601,10 @@ createApp({
       <div class="filter-row">
         <div class="field">
           <label>Project</label>
-          <input v-model="filterProject" placeholder="payments" />
+          <select v-model="filterProject">
+            <option value="">All projects</option>
+            <option v-for="projectName in availableProjectNames" :key="projectName">{{ projectName }}</option>
+          </select>
         </div>
         <div class="field">
           <label>Tag</label>
@@ -1545,56 +1771,64 @@ createApp({
     <!-- CREATE TAB -->
     <div class="tab-panel" v-if="activeTab==='create' && canWrite">
       <h2 style="margin-top:0">New Prompt</h2>
-      <div class="create-grid">
-        <div class="field">
-          <label>Name (required)</label>
-          <input v-model="form.name" placeholder="checkout-system" required />
-        </div>
-        <div class="field">
-          <label>Project (required)</label>
-          <input v-model="form.project" placeholder="payments" required />
-        </div>
+      <div v-if="!availableProjectNames.length" style="padding:12px;background:rgba(185,28,28,0.1);border:1px solid rgba(185,28,28,0.3);border-radius:10px;color:var(--err)">
+        No projects available. Admin must create projects in the Admin tab first.
       </div>
-      <div class="field">
-        <label>Tags (comma-separated, optional)</label>
-        <input v-model="form.tags" placeholder="system, production, v1" />
-      </div>
-      <fieldset class="group-box">
-        <legend>Prompt Data</legend>
-        <div class="field">
-          <label>Role (optional)</label>
-          <input v-model="form.role" placeholder="You are a helpful assistant..." />
+      <template v-else>
+        <div class="create-grid">
+          <div class="field">
+            <label>Name (required)</label>
+            <input v-model="form.name" placeholder="checkout-system" required />
+          </div>
+          <div class="field">
+            <label>Project (required)</label>
+            <select class="select-pretty" v-model="form.project" required>
+              <option value="">Select a project</option>
+              <option v-for="projectName in availableProjectNames" :key="projectName" :value="projectName">{{ projectName }}</option>
+            </select>
+          </div>
         </div>
         <div class="field">
-          <label>Task (required)</label>
-          <textarea v-model="form.task" style="min-height:160px" placeholder="Generate a summary of..."></textarea>
+          <label>Tags (comma-separated, optional)</label>
+          <input v-model="form.tags" placeholder="system, production, v1" />
         </div>
+        <fieldset class="group-box">
+          <legend>Prompt Data</legend>
+          <div class="field">
+            <label>Role (optional)</label>
+            <input v-model="form.role" placeholder="You are a helpful assistant..." />
+          </div>
+          <div class="field">
+            <label>Task (required)</label>
+            <textarea v-model="form.task" style="min-height:160px" placeholder="Generate a summary of..."></textarea>
+          </div>
+          <div class="field">
+            <label>Context (optional)</label>
+            <textarea v-model="form.context" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
+          </div>
+          <div class="field">
+            <label>Constraints (optional)</label>
+            <textarea v-model="form.constraints" style="min-height:80px" placeholder="Limitations, rules, format restrictions..."></textarea>
+          </div>
+          <div class="field">
+            <label>Output format (optional)</label>
+            <textarea v-model="form.output_format" style="min-height:80px" placeholder="JSON, CSV, markdown, bullet points..."></textarea>
+          </div>
+          <div class="field">
+            <label>Examples (optional)</label>
+            <textarea v-model="form.examples" style="min-height:80px" placeholder="Input/output examples..."></textarea>
+          </div>
+        </fieldset>
         <div class="field">
-          <label>Context (optional)</label>
-          <textarea v-model="form.context" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
+          <div class="md-editor-preview-label">Preview</div>
+          <div class="md-editor-preview" :class="{empty: !form.task}" v-html="form.task ? md(buildPromptMarkdown(form)) : 'Nothing to preview yet\u2026'"></div>
         </div>
-        <div class="field">
-          <label>Constraints (optional)</label>
-          <textarea v-model="form.constraints" style="min-height:80px" placeholder="Limitations, rules, format restrictions..."></textarea>
+        <div class="btn-row">
+          <button class="secondary" @click.stop="optimizeFromCreate">Optimize Prompt</button>
+          <button @click="createPrompt" :disabled="!form.project">Save Prompt</button>
         </div>
-        <div class="field">
-          <label>Output format (optional)</label>
-          <textarea v-model="form.output_format" style="min-height:80px" placeholder="JSON, CSV, markdown, bullet points..."></textarea>
-        </div>
-        <div class="field">
-          <label>Examples (optional)</label>
-          <textarea v-model="form.examples" style="min-height:80px" placeholder="Input/output examples..."></textarea>
-        </div>
-      </fieldset>
-      <div class="field">
-        <div class="md-editor-preview-label">Preview</div>
-        <div class="md-editor-preview" :class="{empty: !form.task}" v-html="form.task ? md(buildPromptMarkdown(form)) : 'Nothing to preview yet\u2026'"></div>
-      </div>
-      <div class="btn-row">
-        <button class="secondary" @click.stop="optimizeFromCreate">Optimize Prompt</button>
-        <button @click="createPrompt">Save Prompt</button>
-      </div>
-      <p v-if="createStatus" :class="createStatus.includes('failed') ? 'status-err' : 'status-ok'">{{ createStatus }}</p>
+        <p v-if="createStatus" :class="createStatus.includes('failed') ? 'status-err' : 'status-ok'">{{ createStatus }}</p>
+      </template>
     </div>
 
     <!-- CONFIG TAB -->
@@ -1878,11 +2112,11 @@ createApp({
       </div>
     </div>
 
-    <div class="modal-backdrop" v-if="optimizerModalOpen" @click.self="optimizerModalOpen=false">
+    <div class="modal-backdrop" v-if="optimizerModalOpen" @click.self="closeOptimizerModal">
       <div class="modal-card">
         <div class="modal-header">
           <h3>Prompt Optimization</h3>
-          <button class="ghost" @click="optimizerModalOpen=false">Close</button>
+          <button class="ghost" @click="closeOptimizerModal">Close</button>
         </div>
 
         <p class="status-err" v-if="optimizerError">{{ optimizerError }}</p>

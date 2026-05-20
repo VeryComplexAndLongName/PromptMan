@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
@@ -66,6 +66,18 @@ class PromptOptimizeResponse(BaseModel):
     elapsed_seconds: float | None = None
 
 
+class PromptOptimizeJobOut(BaseModel):
+    job_id: str
+    status: Literal["running", "completed", "failed", "cancelled"]
+    created_at: datetime
+    started_at: datetime
+    completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    error: str | None = None
+    result: PromptOptimizeResponse | None = None
+    can_cancel: bool = False
+
+
 class OptimizeConfigUpdate(BaseModel):
     llm_provider: str | None = None
     llm_model: str | None = None
@@ -90,6 +102,14 @@ class OptimizeConfigOut(BaseModel):
     effective_llm_base_url: str
     effective_llm_timeout_seconds: int
     effective_has_llm_api_token: bool = False
+
+
+class LlmProviderOut(BaseModel):
+    key: str
+    label: str
+    base_url: str
+    requires_api_token: bool = False
+    models: list[str] = []
 
 
 class UserLogin(BaseModel):

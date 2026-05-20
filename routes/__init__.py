@@ -5,10 +5,12 @@ from routes.auth_login import login_route
 from routes.auth_me import get_me_route
 from routes.auth_refresh import refresh_auth_route
 from routes.auth_status import get_auth_status_route
+from routes.llm_providers import list_llm_providers_route
 from routes.optimize_config_get import get_optimize_config_route
 from routes.optimize_config_update import update_optimize_config_route
+from routes.optimize_jobs import cancel_optimize_job_route, create_optimize_job_route, get_optimize_job_route
 from routes.optimize_prompt import optimize_prompt_route
-from routes.optimize_provider_models import get_provider_models_route
+from routes.optimize_provider_models import get_provider_models_route, list_llm_provider_models_route
 from routes.projects_create import create_project_route
 from routes.projects_delete import delete_project_route
 from routes.projects_get import get_project_route
@@ -34,6 +36,8 @@ from routes.users_update_projects import update_user_projects_route
 
 __all__ = [
     "bootstrap_admin_route",
+    "cancel_optimize_job_route",
+    "create_optimize_job_route",
     "change_own_password_route",
     "create_project_route",
     "create_prompt_route",
@@ -45,11 +49,14 @@ __all__ = [
     "get_auth_status_route",
     "get_me_route",
     "get_optimize_config_route",
+    "get_optimize_job_route",
     "get_project_route",
     "get_prompt_route",
     "get_prompt_version_route",
     "get_provider_models_route",
     "get_user_route",
+    "list_llm_provider_models_route",
+    "list_llm_providers_route",
     "list_projects_route",
     "list_prompts_route",
     "list_roles_route",
