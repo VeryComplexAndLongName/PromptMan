@@ -1,4 +1,4 @@
-# Prompt Man
+# PromptMan
 
 [![CI](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/ci.yml/badge.svg)](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/ci.yml)
 [![Docker](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/docker.yml/badge.svg)](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/docker.yml)
