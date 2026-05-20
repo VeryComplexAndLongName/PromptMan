@@ -4,9 +4,9 @@
 [![Docker](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/docker.yml/badge.svg)](https://github.com/VeryComplexAndLongName/PromptMan/actions/workflows/docker.yml)
 [![Coverage](https://codecov.io/gh/VeryComplexAndLongName/PromptMan/graph/badge.svg)](https://codecov.io/gh/VeryComplexAndLongName/PromptMan)
 
-Prompt Man: FastAPI + Vue app for storing, versioning, and optimizing prompts.
+PromptMan: FastAPI + Vue app for storing, versioning, and optimizing prompts.
 
-Prompt Man is **REST API-first**: the primary product surface is the HTTP API, and the application architecture is optimized around API workflows.
+PromptMan is **REST API-first**: the primary product surface is the HTTP API, and the application architecture is optimized around API workflows.
 
 The built-in UI is intentionally a secondary feature: a simple, convenient client for quick operations on top of the same REST API.
 
@@ -213,7 +213,7 @@ Deleting a project cascades to related prompt and access rows.
 
 ## UI Overview
 
-UI is deliberately not the main product surface. Prompt Man is **REST API-first**, and the UI is intentionally kept simple and convenient as a companion client.
+UI is deliberately not the main product surface. PromptMan is **REST API-first**, and the UI is intentionally kept simple and convenient as a companion client.
 
 ### Browse Tab
 
@@ -510,7 +510,7 @@ PostgreSQL is a network database that all instances connect to simultaneously.
 
 **1. Use the built-in PostgreSQL driver already included in the project dependencies:**
 
-Prompt Man already includes `psycopg2-binary` for PostgreSQL.
+PromptMan already includes `psycopg2-binary` for PostgreSQL.
 
 No code changes are required to switch modes in this repository.
 
