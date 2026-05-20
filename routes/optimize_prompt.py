@@ -4,10 +4,7 @@ from routes.shared import get_personal_config
 from schemas import PromptData, PromptOptimizeResponse
 
 
-def optimize_prompt_route(data: PromptData, db, current_user, optimizer) -> PromptOptimizeResponse:  # type: ignore[no-untyped-def]
-    logger.info("optimize.request.start")
-    result = optimizer(data.model_dump(), get_personal_config(db, current_user))
-    logger.info("optimize.request.done engine={}", result.engine)
+def build_prompt_optimize_response(result) -> PromptOptimizeResponse:  # type: ignore[no-untyped-def]
     optimized_dict = result.optimized_fields
     if not isinstance(optimized_dict, dict):
         optimized_dict = {}
@@ -26,3 +23,10 @@ def optimize_prompt_route(data: PromptData, db, current_user, optimizer) -> Prom
         notes=result.notes,
         elapsed_seconds=result.elapsed_seconds,
     )
+
+
+def optimize_prompt_route(data: PromptData, db, current_user, optimizer) -> PromptOptimizeResponse:  # type: ignore[no-untyped-def]
+    logger.info("optimize.request.start")
+    result = optimizer(data.model_dump(), get_personal_config(db, current_user))
+    logger.info("optimize.request.done engine={}", result.engine)
+    return build_prompt_optimize_response(result)

@@ -4,12 +4,17 @@ import json
 import os
 import re
 import time
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 
 from loguru import logger
 
+try:
+    import requests
+except ImportError:
+    requests = None
+
+from optimizer.provider_catalog import get_llm_provider_models
 from optimizer.base import PromptOptimizerBackend
 from optimizer.result import OptimizationResult
 from optimizer.utils import (
@@ -48,9 +53,60 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
         candidate = base_url.strip().lower()
         return ":11434" in candidate or "localhost" in candidate or "127.0.0.1" in candidate or "ollama" in candidate
 
+    def _is_local_url(self, url: str) -> bool:
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except Exception:
+            return False
+        return host in {"127.0.0.1", "localhost", "::1"}
+
+    def _build_openai_compat_provider(self, api_key: str, base_url: str, disable_proxy_env: bool = False) -> Any:
+        from openai import OpenAI
+
+        if disable_proxy_env:
+            import httpx
+
+            client = OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                http_client=httpx.Client(trust_env=False),
+            )
+        else:
+            client = OpenAI(api_key=api_key, base_url=base_url)
+
+        class _OpenAICompatProvider:
+            def __init__(self, openai_client: Any) -> None:
+                self.client = openai_client
+
+            def complete(self, messages: list[dict[str, str]], model: str) -> str:
+                response = self.client.chat.completions.create(model=model, messages=messages)
+                return response.choices[0].message.content or ""
+
+        return _OpenAICompatProvider(client)
+
     def _is_ollama_memory_error(self, exc: Exception) -> bool:
         message = str(exc).lower()
         return "requires more system memory" in message or "insufficient memory" in message
+
+    def _is_ollama_chat_model(self, name: str, details: Mapping[str, Any] | None = None) -> bool:
+        normalized_name = (name or "").strip().lower()
+        if not normalized_name:
+            return False
+
+        # Embedding models are not compatible with chat-completions optimization flow.
+        if "embed" in normalized_name or "embedding" in normalized_name:
+            return False
+
+        families = []
+        if isinstance(details, dict):
+            raw_families = details.get("families")
+            if isinstance(raw_families, list):
+                families = [str(f).strip().lower() for f in raw_families if str(f).strip()]
+
+        if any(family in {"bert", "nomic-bert"} for family in families):
+            return False
+
+        return True
 
     def _pick_low_memory_ollama_model(self, models: list[str], current_model: str) -> str | None:
         preferred = [
@@ -98,7 +154,18 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
             if self._looks_like_ollama_base_url(base_url):
                 ollama_key = (api_token or "ollama").strip() or "ollama"
                 ollama_url = self._normalize_ollama_base_url(base_url)
-                return OpenAIProvider(api_key=ollama_key, base_url=ollama_url), "openai-compat-ollama"
+                disable_proxy_env = self._is_local_url(ollama_url)
+                logger.info(
+                    "optimize.provider.openai_compat_ollama base_url={} disable_proxy_env={}",
+                    ollama_url,
+                    disable_proxy_env,
+                )
+                provider = self._build_openai_compat_provider(
+                    api_key=ollama_key,
+                    base_url=ollama_url,
+                    disable_proxy_env=disable_proxy_env,
+                )
+                return provider, "openai-compat-ollama"
 
             key: str | None = (api_token or "").strip() or None
             url: str | None = (base_url or "").strip() or None
@@ -106,7 +173,18 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
         if normalized == "ollama":
             key = (api_token or "ollama").strip() or "ollama"
             url = self._normalize_ollama_base_url(base_url)
-            return OpenAIProvider(api_key=key, base_url=url), "ollama"
+            disable_proxy_env = self._is_local_url(url)
+            logger.info(
+                "optimize.provider.ollama base_url={} disable_proxy_env={}",
+                url,
+                disable_proxy_env,
+            )
+            provider = self._build_openai_compat_provider(
+                api_key=key,
+                base_url=url,
+                disable_proxy_env=disable_proxy_env,
+            )
+            return provider, "ollama"
         if normalized == "anthropic":
             return AnthropicProvider(api_key=api_token), "anthropic"
         if normalized == "groq":
@@ -256,29 +334,52 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
             service_base = normalized_openai_base[:-3] if normalized_openai_base.endswith("/v1") else normalized_openai_base
             tags_url = f"{service_base.rstrip('/')}/api/tags"
             try:
-                with urllib_request.urlopen(tags_url, timeout=timeout_seconds) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
+                logger.info("list_models.ollama.fetch tags_url={} timeout={}s", tags_url, timeout_seconds)
+                if requests:
+                    if self._is_local_url(tags_url):
+                        # Local Ollama calls should not traverse corporate/system proxies.
+                        with requests.Session() as session:
+                            session.trust_env = False
+                            response = session.get(tags_url, timeout=timeout_seconds)
+                    else:
+                        response = requests.get(tags_url, timeout=timeout_seconds)
+                    response.raise_for_status()
+                    payload = response.json()
+                    logger.info("list_models.ollama.response_status_code={}", response.status_code)
+                else:
+                    from urllib import error as urllib_error
+                    from urllib import request as urllib_request
+                    with urllib_request.urlopen(tags_url, timeout=timeout_seconds) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                
                 models = payload.get("models") if isinstance(payload, dict) else []
                 names = []
+                excluded: list[str] = []
                 for model in models or []:
                     if isinstance(model, dict):
                         name = (model.get("name") or "").strip()
-                        if name:
+                        if not name:
+                            continue
+                        details = model.get("details") if isinstance(model.get("details"), dict) else None
+                        if self._is_ollama_chat_model(name, details):
                             names.append(name)
-                return sorted(set(names))
-            except (urllib_error.URLError, urllib_error.HTTPError, TimeoutError, json.JSONDecodeError):
+                        else:
+                            excluded.append(name)
+                result = sorted(set(names))
+                if result:
+                    logger.info(
+                        "list_models.ollama.success count={} excluded_non_chat={} models={}",
+                        len(result),
+                        len(excluded),
+                        result,
+                    )
+                    if excluded:
+                        logger.info("list_models.ollama.excluded_non_chat models={}", excluded)
+                    return result
+                logger.warning("list_models.ollama.empty no models returned from {}", tags_url)
+                return []
+            except Exception as exc:
+                logger.warning("list_models.ollama.error failed to fetch models from {} ({}): {}", tags_url, type(exc).__name__, exc)
                 return []
 
-        if normalized == "openai":
-            if not (api_token or "").strip():
-                return []
-            return ["gpt-4o", "gpt-4o-mini", "gpt-4.1-mini"]
-        if normalized == "anthropic":
-            return ["claude-3-5-sonnet", "claude-3-haiku"]
-        if normalized == "groq":
-            return ["llama-3.3-70b-versatile", "llama3-8b-8192"]
-        if normalized == "gemini":
-            return ["gemini-1.5-pro", "gemini-1.5-flash"]
-        if normalized == "mistral":
-            return ["mistral-large-latest", "mistral-small-latest"]
-        return []
+        return get_llm_provider_models(normalized)

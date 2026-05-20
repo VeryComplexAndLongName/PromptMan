@@ -67,7 +67,7 @@ def configure_logging() -> None:
     logger.add(
         "logs/app.log",
         level="DEBUG",
-        rotation="10 MB",
+        rotation="4 MB",
         retention="10 days",
         enqueue=True,
         backtrace=True,
