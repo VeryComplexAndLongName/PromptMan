@@ -1318,7 +1318,7 @@ createApp({
   template: `
     <div v-if="!authReady" class="auth-shell">
       <div class="auth-card">
-        <h1>Prompt Man</h1>
+        <h1 class="app-title"><img src="/PromptMan_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
         <span v-if="appVersion" style="display:block;font-size:0.78rem;color:#9ca3af;margin:-6px 0 6px">v{{ appVersion }}</span>
         <p class="subtitle">Loading session...</p>
       </div>
@@ -1326,7 +1326,7 @@ createApp({
 
     <div v-else-if="!isAuthenticated" class="auth-shell">
       <div class="auth-card">
-        <h1>Prompt Man</h1>
+        <h1 class="app-title"><img src="/PromptMan_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
         <span v-if="appVersion" style="display:block;font-size:0.78rem;color:#9ca3af;margin:-6px 0 6px">v{{ appVersion }}</span>
         <p class="subtitle">{{ authBootstrapRequired ? 'Create the first admin account for this workspace.' : 'Sign in to access prompts and personal optimization config.' }}</p>
         <p class="auth-helper">Access token lifetime is 30 minutes. The UI refreshes the session automatically while the refresh token is still valid.</p>
@@ -1351,7 +1351,7 @@ createApp({
     <header style="margin-bottom:4px">
       <div class="header-topline">
         <div>
-          <h1>Prompt Man <span v-if="appVersion" style="font-size:0.55em;color:#9ca3af;font-weight:400;vertical-align:middle">v{{ appVersion }}</span></h1>
+          <h1 class="app-title"><img src="/PromptMan_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan <span v-if="appVersion" style="font-size:0.55em;color:#9ca3af;font-weight:400;vertical-align:middle">v{{ appVersion }}</span></h1>
           <p class="subtitle">Versioned prompts with tags, markdown, and per-user optimization config.</p>
         </div>
         <div class="auth-banner">
@@ -1370,6 +1370,7 @@ createApp({
       <button class="tab-btn" :class="{active: activeTab==='config'}" @click="activeTab='config'">Config</button>
       <button v-if="canViewAdmin" class="tab-btn" :class="{active: activeTab==='admin'}" @click="activeTab='admin'">Admin</button>
       <button class="tab-btn" :class="{active: activeTab==='account'}" @click="activeTab='account'">Account</button>
+      <button class="tab-btn" :class="{active: activeTab==='about'}" @click="activeTab='about'">About</button>
     </div>
 
     <!-- BROWSE TAB -->
@@ -1862,6 +1863,18 @@ createApp({
         </div>
         <p v-if="changePasswordStatus" :class="changePasswordStatus.startsWith('ok:') ? 'status-ok' : 'status-err'"
           style="margin-top:0.7rem">{{ changePasswordStatus.replace(/^(ok:|error:)/,'') }}</p>
+      </div>
+    </div>
+
+    <!-- ABOUT TAB -->
+    <div class="tab-panel" v-if="activeTab==='about'">
+      <div class="about-card">
+        <img src="/PromptMan_240x240.png" alt="PromptMan logo" class="about-logo" />
+        <h2 style="margin-top:0">About PromptMan</h2>
+        <p class="about-motto">The Secure home for LLM and AI Prompts</p>
+        <p><strong>Author:</strong> Alexander Ivanov</p>
+        <p><strong>Email:</strong> <a href="mailto:dev.python.powershell@gmail.com">dev.python.powershell@gmail.com</a></p>
+        <p><strong>GitHub:</strong> <a href="https://github.com/VeryComplexAndLongName/PromptMan" target="_blank" rel="noopener noreferrer">https://github.com/VeryComplexAndLongName/PromptMan</a></p>
       </div>
     </div>
 

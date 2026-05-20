@@ -109,7 +109,7 @@ def _run_startup_bootstrap() -> None:
 lifespan = create_lifespan(_run_startup_bootstrap)
 
 
-app = FastAPI(title="Prompt Man", version=APP_VERSION, lifespan=lifespan)
+app = FastAPI(title="PromptMan", version=APP_VERSION, lifespan=lifespan)
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
 
 
@@ -134,6 +134,11 @@ def get_db() -> Iterator[Session]:
 @app.get("/", include_in_schema=False)
 def serve_ui() -> FileResponse:
     return serve_ui_route()
+
+
+@app.get("/PromptMan_240x240.png", include_in_schema=False)
+def serve_app_icon() -> FileResponse:
+    return FileResponse("PromptMan_240x240.png")
 
 
 @app.post("/auth/bootstrap-admin", response_model=AuthResponse)

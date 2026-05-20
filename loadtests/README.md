@@ -1,6 +1,6 @@
 # Load Testing
 
-This folder provides repeatable load testing for Prompt Man using Locust.
+This folder provides repeatable load testing for PromptMan using Locust.
 
 ## What you get
 
