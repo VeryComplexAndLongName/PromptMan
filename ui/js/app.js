@@ -116,6 +116,8 @@ createApp({
     const browsePage    = ref(1);
     const browsePageSize = ref(10);
     const browseTotalItems = ref(0);
+    const browseSortBy = ref("updated_at");
+    const browseSortOrder = ref("desc");
 
     /* expanded prompt state */
     const expandedKey       = ref(null);
@@ -1034,6 +1036,8 @@ createApp({
       const p = new URLSearchParams();
       if (filterProject.value.trim()) p.set("project", filterProject.value.trim());
       if (filterTag.value.trim())     p.set("tag",     filterTag.value.trim());
+      p.set("sort_by", browseSortBy.value);
+      p.set("sort_order", browseSortOrder.value);
       p.set("limit", String(browsePageSize.value));
       p.set("offset", String((browsePage.value - 1) * browsePageSize.value));
       const q   = p.toString();
@@ -1065,7 +1069,7 @@ createApp({
     });
 
     const loadVersions = async (p) => {
-      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name + "/v1/versions");
+      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name + "/versions");
       expandedVersions.value = res.ok ? await res.json() : [];
     };
 
@@ -1659,6 +1663,7 @@ createApp({
       authReady, authToken, currentUser, authMode, authForm, authError, authStatus, authBusy, authBootstrapRequired, isAuthenticated, isAdmin, isViewer, canViewAdmin, canWrite, currentUserProjectsLabel,
       activeTab, form, createStatus,
       items, filterProject, filterTag, fetchPrompts, browsePage, browsePageSize, browseTotalItems, totalBrowsePages, paginatedItems, setBrowsePage, browseSummaryLabel,
+      browseSortBy, browseSortOrder,
       expandedKey, expandedVersions, openVersionKey,
       editTagsMode, editTagsStr, newVersionRole, newVersionTask, newVersionContext, newVersionConstraints, newVersionOutputFormat, newVersionExamples, saveStatus,
       newVersionEditorOpen,
@@ -1768,6 +1773,22 @@ createApp({
       <div class="browse-toolbar" v-if="browseTotalItems>0">
         <p class="browse-summary">{{ browseSummaryLabel }}</p>
         <div class="browse-pagination-controls">
+          <label class="browse-page-size-label browse-sort-label">
+            Sort by
+            <select v-model="browseSortBy" @change="fetchPrompts(1)">
+              <option value="updated_at">Last modified</option>
+              <option value="created_at">Created time</option>
+              <option value="name">Name</option>
+              <option value="project">Project</option>
+            </select>
+          </label>
+          <label class="browse-page-size-label browse-sort-label">
+            Order
+            <select v-model="browseSortOrder" @change="fetchPrompts(1)">
+              <option value="desc">Descending</option>
+              <option value="asc">Ascending</option>
+            </select>
+          </label>
           <label class="browse-page-size-label">
             Per page
             <select v-model.number="browsePageSize" @change="fetchPrompts(1)">

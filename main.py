@@ -277,10 +277,12 @@ def list_prompts(
     tag: str | None = None,
     limit: str | None = None,
     offset: str | None = None,
+    sort_by: Literal["updated_at", "created_at", "name", "project"] = Query("updated_at"),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth_service.get_current_user),
 ) -> list[PromptOut]:
-    return list_prompts_route(response, project, tag, limit, offset, db, current_user)
+    return list_prompts_route(response, project, tag, limit, offset, sort_by, sort_order, db, current_user)
 
 
 @app.post(f"{API_V1}/prompts", response_model=PromptOut)

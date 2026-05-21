@@ -298,6 +298,15 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
   align-items: center;
   gap: 8px;
   margin: 0;
+  white-space: nowrap;
+}
+
+.browse-sort-label {
+  min-width: 210px;
+}
+
+.browse-page-size-label:not(.browse-sort-label) {
+  min-width: 170px;
 }
 
 .browse-page-size-label select {
@@ -1097,5 +1106,33 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
   }
   .gp-model-card-badges {
     justify-content: flex-start;
+  }
+
+  .browse-pagination-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .browse-page-size-label,
+  .browse-sort-label,
+  .browse-page-size-label:not(.browse-sort-label) {
+    min-width: 0;
+    width: 100%;
+    display: grid;
+    gap: 6px;
+    white-space: normal;
+    font-size: 0.86rem;
+  }
+
+  .browse-page-size-label select {
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .browse-pagination-controls {
+    grid-template-columns: 1fr;
   }
 }
