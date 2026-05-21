@@ -129,7 +129,10 @@ def test_list_prompts_supports_optional_limit_and_offset(client, sample_prompt_p
     assert len(full_response.json()) == 3
     assert full_response.headers["X-Total-Count"] == "3"
 
-    paged_response = client.get("/v1/prompts", params={"limit": 2, "offset": 1})
+    paged_response = client.get(
+        "/v1/prompts",
+        params={"limit": 2, "offset": 1, "sort_by": "name", "sort_order": "asc"},
+    )
     assert paged_response.status_code == 200
     paged_items = paged_response.json()
     assert len(paged_items) == 2

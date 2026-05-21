@@ -74,6 +74,8 @@ def build_prompt_collection_cache_key(
     tags: list[str] | None = None,
     mode: str | None = None,
     version: int | None = None,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
     allowed_projects: list[str] | None = None,
 ) -> str:
     normalized_allowed_projects = sorted({_normalize_text(item).lower() for item in (allowed_projects or []) if _normalize_text(item)})
@@ -88,6 +90,8 @@ def build_prompt_collection_cache_key(
         "tags": sorted({_normalize_text(item).lower() for item in (tags or []) if _normalize_text(item)}),
         "mode": _normalize_text(mode).lower() if mode is not None else None,
         "version": version,
+        "sort_by": _normalize_text(sort_by).lower() if sort_by is not None else None,
+        "sort_order": _normalize_text(sort_order).lower() if sort_order is not None else None,
         "allowed_projects": normalized_allowed_projects,
         "allowed_projects_all": allowed_projects is None,
     }

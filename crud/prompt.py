@@ -159,8 +159,27 @@ def list_prompts(
     limit: int | None = None,
     offset: int | None = None,
     allowed_projects: list[str] | None = None,
+    sort_by: str = "updated_at",
+    sort_order: str = "desc",
 ) -> list[Prompt]:
-    query = _build_prompt_list_query(db, project=project, tag=tag, allowed_projects=allowed_projects).order_by(Project.name.asc(), Prompt.name.asc())
+    query = _build_prompt_list_query(db, project=project, tag=tag, allowed_projects=allowed_projects)
+
+    order_desc = sort_order.strip().lower() == "desc"
+    normalized_sort_by = (sort_by or "updated_at").strip().lower()
+
+    if normalized_sort_by == "name":
+        primary = Prompt.name.desc() if order_desc else Prompt.name.asc()
+        query = query.order_by(primary, Project.name.asc(), Prompt.updated_at.desc())
+    elif normalized_sort_by == "project":
+        primary = Project.name.desc() if order_desc else Project.name.asc()
+        query = query.order_by(primary, Prompt.name.asc(), Prompt.updated_at.desc())
+    elif normalized_sort_by == "created_at":
+        primary = Prompt.created_at.desc() if order_desc else Prompt.created_at.asc()
+        query = query.order_by(primary, Project.name.asc(), Prompt.name.asc())
+    else:
+        # Default sort: last modified first.
+        primary = Prompt.updated_at.desc() if order_desc else Prompt.updated_at.asc()
+        query = query.order_by(primary, Project.name.asc(), Prompt.name.asc())
 
     if offset is not None:
         query = query.offset(max(0, offset))

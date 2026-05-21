@@ -34,6 +34,7 @@ The project is aimed at small and medium teams that need concurrent multi-user a
 - Structured prompt fields: `role`, `task`, `context`, `constraints`, `output_format`, `examples`.
 - Tagging plus AND/OR search.
 - Server-side prompt pagination with `X-Total-Count`.
+- Server-side prompt sorting (`updated_at`, `created_at`, `name`, `project`) with default `updated_at desc`.
 - Prompt delete with cascading cleanup of versions and access data.
 - Unified optimization path through pluggable optimizer backend.
 - Optimization profiles: `fast`, `quality`, `ultra`.
@@ -219,6 +220,8 @@ UI is deliberately not the main product surface. PromptMan is **REST API-first**
 
 - View prompts by project/name.
 - Filter by project and tag.
+- Sort prompt lists by last modified, created time, name, or project.
+- Default sort order is last modified descending.
 - Expand a prompt to inspect latest content and version history.
 - See who created the prompt, who updated it last, and when those actions happened.
 - All user-visible prompt audit timestamps are shown explicitly in UTC.
@@ -276,7 +279,7 @@ Visible for admins in the Config tab.
 
 ### Optimization Modal
 
-- Shows optimization engine, notes, execution log, and composed markdown.
+- Shows the optimized prompt text in a focused view.
 - Supports `Reoptimize` without leaving the modal.
 - Supports applying optimized content back into Create or Browse flows.
 
@@ -347,9 +350,10 @@ GET /v1/optimize/providers/{provider}/models
 ```
 
 - Ollama: discovered via provider API.
-- OpenAI: no fixed built-in discovery list is returned by this service.
+- OpenAI: discovered through provider API when credentials are available.
 - OpenAI + local Ollama base URL: discovered through Ollama `/api/tags` compatibility path.
-- Anthropic: fixed built-in list.
+- Anthropic: discovered through provider API when credentials are available.
+- For token-required providers, no token means an empty model list (no static fallback list is returned).
 
 ## Optimization Config Example
 
@@ -472,7 +476,7 @@ Admin-only runtime settings endpoints.
 - `POST /v1/users`
 - `GET /v1/users/{user_id}`
 - `PUT /v1/users/{user_id}`
-- `PUT /v1/users/{user_id}/v1/projects`
+- `PUT /v1/users/{user_id}/projects`
 - `DELETE /v1/users/{user_id}`
 
 ### Projects
@@ -486,7 +490,8 @@ Admin-only runtime settings endpoints.
 ### Prompts
 
 - `GET /v1/prompts`
-  - query params: `project`, `tag`, `limit`, `offset`
+  - query params: `project`, `tag`, `limit`, `offset`, `sort_by`, `sort_order`
+  - defaults: `sort_by=updated_at`, `sort_order=desc`
   - response header: `X-Total-Count`
   - each prompt includes `created_at`, `updated_at`, `created_by_username`, `updated_by_username`
 - `GET /v1/prompts/search`

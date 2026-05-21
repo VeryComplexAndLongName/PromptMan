@@ -20,6 +20,8 @@ def list_prompts_route(
     tag: str | None,
     limit: str | None,
     offset: str | None,
+    sort_by: str,
+    sort_order: str,
     db: Session,
     current_user: User,
 ) -> list[PromptOut]:
@@ -50,12 +52,24 @@ def list_prompts_route(
         tag=tag,
         limit=limit_int,
         offset=offset_int,
+        sort_by=sort_by,
+        sort_order=sort_order,
         allowed_projects=user_allowed_projects,
     )
 
     def _load_list() -> dict[str, object]:
         total_count = run_db_call(db, crud.count_prompts, project=project, tag=tag, allowed_projects=user_allowed_projects)
-        prompts = run_db_call(db, crud.list_prompts, project=project, tag=tag, limit=limit_int, offset=offset_int, allowed_projects=user_allowed_projects)
+        prompts = run_db_call(
+            db,
+            crud.list_prompts,
+            project=project,
+            tag=tag,
+            limit=limit_int,
+            offset=offset_int,
+            allowed_projects=user_allowed_projects,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
         return {
             "total_count": total_count,
             "prompts": [to_prompt_out(db, prompt).model_dump(mode="json") for prompt in prompts],
