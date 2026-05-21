@@ -35,13 +35,13 @@ Available scenarios:
 - `mixed`
 	- list/search/create/update plus low-rate optimize traffic
 - `cache`
-	- repeated hot reads (`GET /prompts`, detail, search, versions) plus repeated identical `POST /optimize`
+	- repeated hot reads (`GET /v1/prompts`, detail, search, versions) plus repeated identical `POST /v1/optimize`
 	- intended to exercise the shared in-memory cache path
 - `optimize_hot`
-	- repeated identical `POST /optimize` requests with no prompt-read traffic mixed in
+	- repeated identical `POST /v1/optimize` requests with no prompt-read traffic mixed in
 	- intended to measure the pure hot-cache optimization path against `optimize_cold`
 - `optimize_cold`
-	- repeated `POST /optimize` with unique payloads so cache keys never match
+	- repeated `POST /v1/optimize` with unique payloads so cache keys never match
 	- intended to quantify the cost of cache misses against the hot-cache scenario
 
 ## Run automated benchmark (RPS + p95 + failures)
@@ -53,7 +53,7 @@ python loadtests/benchmark_rps.py --host http://127.0.0.1:8000 --duration 15s --
 The runner now:
 
 - fetches one bearer token up front and reuses it for all Locust users
-- writes scenario CSVs into `loadtests/results/mixed/`, `loadtests/results/cache/`, `loadtests/results/optimize_hot/`, and `loadtests/results/optimize_cold/`
+- writes scenario CSVs into `loadtests/results/mixed/`, `loadtests/results/cache/`, `loadtests/results/v1/optimize_hot/`, and `loadtests/results/v1/optimize_cold/`
 - emits `benchmark_manifest.json` so charts only use fresh scenario runs
 - emits `benchmark_summary.md` for quick documentation updates
 - pairs naturally with the unit test `test_cached_optimization_is_faster_than_cold_optimization`
@@ -112,5 +112,5 @@ python loadtests/benchmark_rps.py --max-failure-rate 0.02 --max-p95-ms 800
 
 - Run the server without auto-reload for cleaner numbers (`uvicorn main:app`).
 - The cache scenario assumes the shared in-memory cache is enabled inside the app process under test.
-- The optimize comparison chart is driven from `benchmark_manifest.json`, so it reflects scenario-aware `/optimize` metrics rather than aggregated setup traffic.
+- The optimize comparison chart is driven from `benchmark_manifest.json`, so it reflects scenario-aware `/v1/optimize` metrics rather than aggregated setup traffic.
 - The scenario comparison is most meaningful when both scenarios target the same server process and database state.

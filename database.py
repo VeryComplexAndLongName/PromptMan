@@ -1,5 +1,5 @@
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Concatenate, ParamSpec, TypeVar
 
@@ -64,6 +64,15 @@ class Base(DeclarativeBase):
 
 def close_db_session(db: DatabaseSession) -> None:
     db.close()
+
+
+def get_db() -> Iterator[DatabaseSession]:
+    """FastAPI dependency that yields a SQLAlchemy session and closes it afterwards."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        close_db_session(db)
 
 
 def run_db_call(db: DatabaseSession, operation: Callable[Concatenate[DatabaseSession, P], T], /, *args: P.args, **kwargs: P.kwargs) -> T:

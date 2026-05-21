@@ -137,7 +137,7 @@ def test_optimize_result_is_cached_for_same_config(monkeypatch):  # type: ignore
 
 
 def test_prompt_get_response_is_cached_for_same_prompt(client, sample_prompt_payload, monkeypatch):  # type: ignore[no-untyped-def]
-    client.post("/prompts", json=sample_prompt_payload)
+    client.post("/v1/prompts", json=sample_prompt_payload)
 
     call_count = {"count": 0}
     original_get_prompt = main.crud.get_prompt
@@ -148,8 +148,8 @@ def test_prompt_get_response_is_cached_for_same_prompt(client, sample_prompt_pay
 
     monkeypatch.setattr(main.crud, "get_prompt", counting_get_prompt)
 
-    first = client.get("/prompts/payments/checkout-system")
-    second = client.get("/prompts/payments/checkout-system")
+    first = client.get("/v1/prompts/payments/checkout-system")
+    second = client.get("/v1/prompts/payments/checkout-system")
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -205,7 +205,7 @@ def test_openai_provider_with_ollama_base_url_is_treated_as_compat_mode():  # ty
 
 def test_openai_provider_with_ollama_base_url_returns_ollama_models(client):  # type: ignore[no-untyped-def]
     response = client.get(
-        "/optimize/providers/openai/models",
+        "/v1/optimize/providers/openai/models",
         params={"base_url": "http://127.0.0.1:19998", "timeout_seconds": 1},
     )
     assert response.status_code == 200

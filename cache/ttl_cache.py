@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import os
 import time
 from copy import deepcopy
 from dataclasses import dataclass
 from threading import Event, RLock
 from typing import TYPE_CHECKING, Any
 
+import app_settings
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 
 def _default_max_entries() -> int:
-    raw_value = os.getenv("PROMPTMAN_CACHE_MAX_ENTRIES", "512").strip()
-    return max(1, int(raw_value)) if raw_value.isdigit() else 512
+    return app_settings.get_int("PROMPTMAN_CACHE_MAX_ENTRIES", 512)
 
 
 @dataclass
@@ -34,6 +34,7 @@ class SharedTTLCache:
     def __init__(self, *, max_entries: int | None = None) -> None:
         self._entries: dict[str, _CacheEntry] = {}
         self._inflight: dict[str, _InflightState] = {}
+        self._access_counts: dict[str, int] = {}
         self._lock = RLock()
         self._sequence = 0
         self._max_entries = max_entries if max_entries is not None else _default_max_entries()
@@ -41,6 +42,9 @@ class SharedTTLCache:
     def _next_sequence_unlocked(self) -> int:
         self._sequence += 1
         return self._sequence
+
+    def _note_access_unlocked(self, key: str) -> None:
+        self._access_counts[key] = self._access_counts.get(key, 0) + 1
 
     def _prune_expired_unlocked(self, now: float, *, sample_limit: int = 16) -> None:
         for key in list(self._entries.keys())[:sample_limit]:
@@ -56,6 +60,7 @@ class SharedTTLCache:
     def get(self, key: str) -> Any | None:
         now = time.monotonic()
         with self._lock:
+            self._note_access_unlocked(key)
             entry = self._entries.get(key)
             if entry is None:
                 return None
@@ -83,12 +88,14 @@ class SharedTTLCache:
     def delete(self, key: str) -> None:
         with self._lock:
             self._entries.pop(key, None)
+            self._access_counts.pop(key, None)
 
     def clear(self, prefix: str | None = None) -> None:
         with self._lock:
             if prefix is None:
                 self._entries.clear()
                 self._inflight.clear()
+                self._access_counts.clear()
                 return
 
             for key in list(self._entries.keys()):
@@ -97,11 +104,36 @@ class SharedTTLCache:
             for key in list(self._inflight.keys()):
                 if key.startswith(prefix):
                     self._inflight.pop(key, None)
+            for key in list(self._access_counts.keys()):
+                if key.startswith(prefix):
+                    self._access_counts.pop(key, None)
+
+    def get_hot_entries(self, limit: int, *, prefix: str | None = None) -> list[tuple[str, Any]]:
+        now = time.monotonic()
+        limit = max(0, int(limit))
+        if limit <= 0:
+            return []
+
+        with self._lock:
+            hot_entries: list[tuple[str, int, int, Any]] = []
+            for key, access_count in self._access_counts.items():
+                if prefix is not None and not key.startswith(prefix):
+                    continue
+
+                entry = self._entries.get(key)
+                if entry is None or entry.expires_at <= now:
+                    continue
+
+                hot_entries.append((key, access_count, entry.last_access_seq, deepcopy(entry.value)))
+
+            hot_entries.sort(key=lambda item: (item[1], item[2]), reverse=True)
+            return [(key, value) for key, _, _, value in hot_entries[:limit]]
 
     def get_or_set(self, key: str, ttl_seconds: int, factory: Callable[[], Any]) -> Any:
         ttl = max(1, int(ttl_seconds))
 
         with self._lock:
+            self._note_access_unlocked(key)
             entry = self._entries.get(key)
             now = time.monotonic()
             if entry is not None:

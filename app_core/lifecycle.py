@@ -65,13 +65,52 @@ def run_startup_bootstrap(
     )
 
 
-def create_lifespan(startup_action: Callable[[], None]) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+def run_shutdown_bootstrap(shutdown_action: Callable[[], None] | None = None) -> None:
+    shutdown_started = perf_counter()
+    logger.info("shutdown.begin pid={}", os.getpid())
+    if shutdown_action is not None:
+        shutdown_action()
+    logger.info("shutdown.done duration_ms={:.2f}", (perf_counter() - shutdown_started) * 1000)
+
+
+def create_startup_action(
+    database_url: str,
+    init_database_fn: Callable[[], None],
+    startup_session_factory: Callable[[], Session],
+    bootstrap_fn: Callable[[Session], None],
+    close_session_fn: Callable[[Session], None],
+) -> Callable[[], None]:
+    def startup_action() -> None:
+        run_startup_bootstrap(
+            database_url,
+            init_database_fn,
+            startup_session_factory,
+            bootstrap_fn,
+            close_session_fn,
+        )
+
+    return startup_action
+
+
+def chain_actions(*actions: Callable[[], None] | None) -> Callable[[], None]:
+    def chained_action() -> None:
+        for action in actions:
+            if action is not None:
+                action()
+
+    return chained_action
+
+
+def create_app_lifespan(
+    startup_action: Callable[[], None],
+    shutdown_action: Callable[[], None] | None = None,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         startup_action()
         try:
             yield
         finally:
-            logger.info("shutdown.begin pid={}", os.getpid())
+            run_shutdown_bootstrap(shutdown_action)
 
     return lifespan

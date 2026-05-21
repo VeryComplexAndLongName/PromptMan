@@ -51,7 +51,7 @@ def _console_log_format(record: dict[str, Any], show_console_source: bool) -> st
 
 def configure_logging() -> None:
     console_log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
-    show_console_source = os.getenv("SHOW_CONSOLE_SOURCE", "0").strip().lower() in {"1", "true", "yes", "on"}
+    show_console_source = os.getenv("SHOW_CONSOLE_SOURCE", "").strip().lower() in {"1", "true", "yes", "on"}
 
     os.makedirs("logs", exist_ok=True)
     logger.remove()

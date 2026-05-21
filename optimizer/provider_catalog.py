@@ -35,35 +35,38 @@ _PROVIDER_CATALOG: tuple[LlmProviderCatalogEntry, ...] = (
         label="OpenAI",
         base_url="https://api.openai.com/v1",
         requires_api_token=True,
-        models=("gpt-4o", "gpt-4o-mini", "gpt-4.1-mini"),
+        # OpenAI model availability is account/subscription-specific — no static catalog.
+        # Without an API token the endpoint returns []; with a token the caller can
+        # supply a token-based override or the UI allows free-form model entry.
+        models=(),
     ),
     LlmProviderCatalogEntry(
         key="anthropic",
         label="Anthropic Claude",
         base_url="https://api.anthropic.com",
         requires_api_token=True,
-        models=("claude-3-5-sonnet", "claude-3-haiku"),
+        models=(),
     ),
     LlmProviderCatalogEntry(
         key="groq",
         label="Groq",
         base_url="https://api.groq.com/openai/v1",
         requires_api_token=True,
-        models=("llama-3.3-70b-versatile", "llama3-8b-8192"),
+        models=(),
     ),
     LlmProviderCatalogEntry(
         key="gemini",
         label="Google Gemini",
         base_url="https://generativelanguage.googleapis.com",
         requires_api_token=True,
-        models=("gemini-1.5-pro", "gemini-1.5-flash"),
+        models=(),
     ),
     LlmProviderCatalogEntry(
         key="mistral",
         label="Mistral",
         base_url="https://api.mistral.ai",
         requires_api_token=True,
-        models=("mistral-large-latest", "mistral-small-latest"),
+        models=(),
     ),
 )
 

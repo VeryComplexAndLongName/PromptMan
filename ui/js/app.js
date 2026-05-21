@@ -149,7 +149,7 @@ createApp({
     const optimizedDraft = ref(emptyPromptData());
     const optimizeInputSource = ref("create");
     const optimizeTargetPrompt = ref(null);
-    const optimizeEndpoint = ref("/optimize");
+    const optimizeEndpoint = ref("/v1/optimize");
     const optimizeConfig = ref(defaultOptimizeConfig());
     const optimizeConfigStatus = ref("");
     const llmProviderConfigs = ref(structuredClone(initialLlmProviderConfigs));
@@ -177,6 +177,9 @@ createApp({
     const newUserForm = ref(emptyUserForm());
     const editingUserId = ref(null);
     const editUserForm = ref(emptyUserForm());
+    const globalConfigEntries = ref([]);
+    const globalConfigLoading = ref(false);
+    const globalConfigStatus = ref("");
 
     /* change password */
     const changePasswordForm = ref({ current_password: "", new_password: "", confirm_password: "" });
@@ -329,6 +332,8 @@ createApp({
       users.value = [];
       projects.value = [];
       optimizeConfig.value = defaultOptimizeConfig();
+      globalConfigEntries.value = [];
+      globalConfigStatus.value = "";
       if (reason) {
         authError.value = reason;
       }
@@ -359,7 +364,7 @@ createApp({
 
       tokenRefreshPromise = (async () => {
         try {
-          const res = await fetch("/auth/refresh", {
+          const res = await fetch("/v1/auth/refresh", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ refresh_token: refreshToken.value }),
@@ -390,7 +395,7 @@ createApp({
         headers: authHeaders(options.headers || {}),
       };
       let response = await fetch(url, requestOptions);
-      if (response.status === 401 && retryOn401 && refreshToken.value && !String(url).startsWith("/auth/refresh")) {
+      if (response.status === 401 && retryOn401 && refreshToken.value && !String(url).startsWith("/v1/auth/refresh")) {
         const refreshed = await refreshSession();
         if (refreshed) {
           response = await fetch(url, {
@@ -410,7 +415,7 @@ createApp({
 
     const fetchAuthStatus = async () => {
       try {
-        const res = await fetch("/auth/status");
+        const res = await fetch("/v1/auth/status");
         if (!res.ok) {
           authBootstrapRequired.value = false;
           authMode.value = "login";
@@ -432,7 +437,7 @@ createApp({
       }
       usersLoading.value = true;
       usersStatus.value = "";
-      const res = await apiFetch("/users");
+      const res = await apiFetch("/v1/users");
       if (!res.ok) {
         usersLoading.value = false;
         usersStatus.value = `Failed to load users (${res.status})`;
@@ -449,7 +454,7 @@ createApp({
       }
       projectsLoading.value = true;
       projectsStatus.value = "";
-      const res = await apiFetch("/projects");
+      const res = await apiFetch("/v1/projects");
       if (!res.ok) {
         projectsLoading.value = false;
         projectsStatus.value = `Failed to load projects (${res.status})`;
@@ -464,7 +469,7 @@ createApp({
         roleOptions.value = [...defaultUserRoleOptions, "viewer"];
         return;
       }
-      const res = await apiFetch("/roles");
+      const res = await apiFetch("/v1/roles");
       if (!res.ok) {
         roleOptions.value = [...defaultUserRoleOptions, "viewer"];
         return;
@@ -475,6 +480,135 @@ createApp({
         : [...defaultUserRoleOptions];
     };
 
+    const loadGlobalConfig = async () => {
+      if (!isAdmin.value) {
+        globalConfigEntries.value = [];
+        globalConfigStatus.value = "";
+        return;
+      }
+      globalConfigLoading.value = true;
+      globalConfigStatus.value = "";
+      try {
+        const res = await apiFetch("/v1/admin/config/");
+        if (!res.ok) {
+          globalConfigStatus.value = `Failed to load global config (${res.status})`;
+          return;
+        }
+        const payload = await res.json();
+        const entries = Object.entries(payload || {})
+          .map(([key, value]) => ({
+            key,
+            value: String(value ?? ""),
+            draft: String(value ?? ""),
+            saving: false,
+          }))
+          .sort((a, b) => a.key.localeCompare(b.key));
+        globalConfigEntries.value = entries;
+      } catch (_err) {
+        globalConfigStatus.value = "Failed to load global config (network error)";
+      } finally {
+        globalConfigLoading.value = false;
+      }
+    };
+
+    const globalConfigBooleanKeys = new Set([
+      "PROMPTMAN_CACHE_ENABLED",
+      "PROMPTMAN_CACHE_PERSISTENCE_ENABLED",
+    ]);
+
+    const globalConfigIntegerKeys = new Set([
+      "OPTIMIZER_TIMEOUT_SECONDS",
+      "PROMPTMAN_CACHE_MAX_ENTRIES",
+      "PROMPTMAN_CACHE_PERSISTENCE_LIMIT",
+    ]);
+
+    const globalConfigSelectKeys = new Set([
+      "OPTIMIZER_BACKEND",
+      "OPTIMIZER_PROVIDER",
+    ]);
+
+    const getGlobalConfigControlType = (entry) => {
+      const key = String(entry?.key || "");
+      if (globalConfigBooleanKeys.has(key)) return "boolean";
+      if (globalConfigIntegerKeys.has(key)) return "integer";
+      if (globalConfigSelectKeys.has(key)) return "select";
+      return "text";
+    };
+
+    const getGlobalConfigOptions = (entry) => {
+      const key = String(entry?.key || "");
+      if (key === "OPTIMIZER_BACKEND") {
+        return ["leo"];
+      }
+      if (key === "OPTIMIZER_PROVIDER") {
+        const providers = llmProviderOptions.value || [];
+        return providers.length ? providers : ["ollama", "openai", "anthropic"];
+      }
+      return [];
+    };
+
+    const setGlobalConfigBooleanDraft = (entry, checked) => {
+      entry.draft = checked ? "true" : "false";
+    };
+
+    const normalizeGlobalConfigDraftForSave = (entry) => {
+      const controlType = getGlobalConfigControlType(entry);
+      if (controlType === "boolean") {
+        const normalized = String(entry.draft || "").trim().toLowerCase();
+        entry.draft = ["true", "1", "yes", "on"].includes(normalized) ? "true" : "false";
+        return;
+      }
+      if (controlType === "integer") {
+        const raw = String(entry.draft ?? "").trim();
+        if (!/^-?\d+$/.test(raw)) {
+          throw new Error("Value must be an integer");
+        }
+        entry.draft = String(parseInt(raw, 10));
+      }
+    };
+
+    const resetGlobalConfigDraft = (entry) => {
+      entry.draft = entry.value;
+    };
+
+    const saveGlobalConfigEntry = async (entry) => {
+      if (!isAdmin.value) {
+        return;
+      }
+      entry.saving = true;
+      globalConfigStatus.value = "";
+      try {
+        normalizeGlobalConfigDraftForSave(entry);
+        const params = new URLSearchParams({ value: String(entry.draft ?? "") });
+        const res = await apiFetch(`/v1/admin/config/${encodeURIComponent(entry.key)}?${params.toString()}`, {
+          method: "PUT",
+        });
+        if (!res.ok) {
+          let detail = "";
+          try {
+            const body = await res.json();
+            detail = body?.detail || "";
+          } catch (_err) {
+            detail = "";
+          }
+          globalConfigStatus.value = `Failed to save ${entry.key} (${res.status})${detail ? `: ${detail}` : ""}`;
+          return;
+        }
+
+        entry.value = String(entry.draft ?? "");
+        globalConfigStatus.value = `Saved ${entry.key}`;
+
+        if (entry.key.startsWith("OPTIMIZER_") || entry.key === "OLLAMA_BASE_URL") {
+          await loadOptimizeConfig();
+        }
+      } catch (_err) {
+        const details = _err?.message || "network error";
+        globalConfigStatus.value = `Failed to save ${entry.key} (${details})`;
+      } finally {
+        entry.saving = false;
+      }
+    };
+
     const initializeAuthenticatedApp = async () => {
       setDefaultActiveTab();
       await fetchPrompts();
@@ -483,13 +617,14 @@ createApp({
       await loadRoles();
       await loadProjects();
       await loadUsers();
+      await loadGlobalConfig();
     };
 
     const loadCurrentUser = async () => {
       if (!authToken.value) {
         return false;
       }
-      const res = await apiFetch("/auth/me");
+      const res = await apiFetch("/v1/auth/me");
       if (!res.ok) {
         clearSession("");
         return false;
@@ -502,7 +637,7 @@ createApp({
       authBusy.value = true;
       authError.value = "";
       authStatus.value = "";
-      const endpoint = authMode.value === "bootstrap" ? "/auth/bootstrap-admin" : "/auth/login";
+      const endpoint = authMode.value === "bootstrap" ? "/v1/auth/bootstrap-admin" : "/v1/auth/login";
       try {
         const res = await fetch(endpoint, {
           method: "POST",
@@ -581,7 +716,7 @@ createApp({
     const createProjectRecord = async () => {
       if (!canWrite.value) return;
       projectsStatus.value = "";
-      const res = await apiFetch("/projects", {
+      const res = await apiFetch("/v1/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: newProjectForm.value.name.trim() }),
@@ -610,7 +745,7 @@ createApp({
     const saveProjectEdit = async (projectId) => {
       if (!canWrite.value) return;
       projectsStatus.value = "";
-      const res = await apiFetch(`/projects/${projectId}`, {
+      const res = await apiFetch(`/v1/projects/${projectId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: editProjectForm.value.name.trim() }),
@@ -631,7 +766,7 @@ createApp({
       projectsStatus.value = "";
       const message = `CAUTION: You are about to delete project "${project.name}" and ALL related prompts with ALL their versions.\n\nThis action cannot be undone.\n\nAre you sure?`;
       if (!window.confirm(message)) return;
-      const res = await apiFetch(`/projects/${project.id}`, { method: "DELETE" });
+      const res = await apiFetch(`/v1/projects/${project.id}`, { method: "DELETE" });
       if (!res.ok) {
         projectsStatus.value = `Failed to delete project (${res.status})`;
         return;
@@ -652,7 +787,7 @@ createApp({
         projects: normalizeProjects(newUserForm.value.projects),
         is_active: !!newUserForm.value.is_active,
       };
-      const res = await apiFetch("/users", {
+      const res = await apiFetch("/v1/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -678,7 +813,7 @@ createApp({
       if (editUserForm.value.password) {
         payload.password = editUserForm.value.password;
       }
-      const res = await apiFetch(`/users/${userId}`, {
+      const res = await apiFetch(`/v1/users/${userId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -699,7 +834,7 @@ createApp({
       if (!canWrite.value) return;
       usersStatus.value = "";
       if (!window.confirm(`Delete user ${user.username}?`)) return;
-      const res = await apiFetch(`/users/${user.id}`, { method: "DELETE" });
+      const res = await apiFetch(`/v1/users/${user.id}`, { method: "DELETE" });
       if (!res.ok) {
         usersStatus.value = `Failed to delete user (${res.status})`;
         return;
@@ -788,7 +923,7 @@ createApp({
 
       let res;
       try {
-        res = await apiFetch(`/optimize/jobs/${encodeURIComponent(jobId)}`);
+        res = await apiFetch(`/v1/optimize/jobs/${encodeURIComponent(jobId)}`);
       } catch (err) {
         clearOptimizationPoll();
         activeOptimizationJobId.value = "";
@@ -843,7 +978,7 @@ createApp({
 
       let res;
       try {
-        res = await apiFetch(`/optimize/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+        res = await apiFetch(`/v1/optimize/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
       } catch (err) {
         optimizerError.value = "Unable to cancel optimization.";
         pushOptimizerLog("Unable to cancel optimization.", "error");
@@ -902,7 +1037,7 @@ createApp({
       p.set("limit", String(browsePageSize.value));
       p.set("offset", String((browsePage.value - 1) * browsePageSize.value));
       const q   = p.toString();
-      const res = await apiFetch("/prompts" + (q ? "?" + q : ""));
+      const res = await apiFetch("/v1/prompts" + (q ? "?" + q : ""));
       if (!res.ok) {
         console.error("fetchPrompts failed:", res.status, res.statusText);
         items.value = [];
@@ -930,7 +1065,7 @@ createApp({
     });
 
     const loadVersions = async (p) => {
-      const res = await apiFetch("/prompts/" + p.project + "/" + p.name + "/versions");
+      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name + "/v1/versions");
       expandedVersions.value = res.ok ? await res.json() : [];
     };
 
@@ -968,7 +1103,7 @@ createApp({
       const confirmed = window.confirm(`Delete prompt ${p.project} / ${p.name}? This cannot be undone.`);
       if (!confirmed) return;
 
-      const res = await apiFetch("/prompts/" + p.project + "/" + p.name, {
+      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name, {
         method: "DELETE",
       });
 
@@ -988,7 +1123,7 @@ createApp({
     const saveNewVersion = async (p) => {
       if (!canWrite.value) return;
       saveStatus.value = "";
-      const res = await apiFetch("/prompts/" + p.project + "/" + p.name, {
+      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1018,7 +1153,7 @@ createApp({
     const saveTags = async (p) => {
       if (!canWrite.value) return;
       saveStatus.value = "";
-      const res = await apiFetch("/prompts/" + p.project + "/" + p.name + "/tags", {
+      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name + "/tags", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tags: parseTags(editTagsStr.value) }),
@@ -1050,7 +1185,7 @@ createApp({
         output_format: form.value.output_format || null,
         examples: form.value.examples || null,
       };
-      const res = await apiFetch("/prompts", {
+      const res = await apiFetch("/v1/prompts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1073,6 +1208,9 @@ createApp({
 
     const getDefaultProviderModels = (provider) => {
       const key = String(provider || "").toLowerCase();
+      if (getProviderConfig(key).requiresApiToken) {
+        return [];
+      }
       return [...(defaultLlmModelsByProvider.value[key] || [])];
     };
 
@@ -1104,7 +1242,7 @@ createApp({
 
     const loadLlmProviders = async () => {
       try {
-        const res = await apiFetch("/llm/providers");
+        const res = await apiFetch("/v1/llm/providers");
         if (!res.ok) {
           return;
         }
@@ -1146,21 +1284,30 @@ createApp({
 
       const selectedProvider = String(provider || "ollama").toLowerCase();
       const fallbackModels = getDefaultProviderModels(selectedProvider);
+      const requiresToken = modelRequiresToken(selectedProvider);
+      const token = String(optimizeConfig.value.llm_api_token || "").trim();
+
+      if (requiresToken && !token) {
+        availableLlmModels.value = [];
+        llmModelsLoadError.value = `${getProviderLabel(selectedProvider)} requires API token. Unable to request available models without token.`;
+        llmModelsLoading.value = false;
+        return;
+      }
 
       try {
         const params = new URLSearchParams();
         if ((optimizeConfig.value.llm_base_url || "").trim()) {
           params.set("base_url", optimizeConfig.value.llm_base_url.trim());
         }
-        if ((optimizeConfig.value.llm_api_token || "").trim()) {
-          params.set("api_token", optimizeConfig.value.llm_api_token.trim());
+        if (token) {
+          params.set("api_token", token);
         }
         params.set("timeout_seconds", "10");
 
-        const res = await apiFetch(`/llm/providers/${encodeURIComponent(selectedProvider)}/models?${params.toString()}`);
+        const res = await apiFetch(`/v1/llm/providers/${encodeURIComponent(selectedProvider)}/models?${params.toString()}`);
         if (!res.ok) {
-          llmModelsLoadError.value = `Failed to load provider models (HTTP ${res.status}). Using fallback list.`;
-          availableLlmModels.value = fallbackModels;
+          llmModelsLoadError.value = `Failed to load provider models (HTTP ${res.status}).`;
+          availableLlmModels.value = requiresToken ? [] : fallbackModels;
         } else {
           const discovered = await res.json();
           const clean = Array.isArray(discovered)
@@ -1170,14 +1317,14 @@ createApp({
             availableLlmModels.value = clean;
             console.log(`[Models] Loaded ${clean.length} models from ${selectedProvider}:`, clean);
           } else {
-            llmModelsLoadError.value = `No models discovered for ${selectedProvider}. Using fallback list. Check if provider is running.`;
-            availableLlmModels.value = fallbackModels;
+            llmModelsLoadError.value = `No models discovered for ${selectedProvider}.`;
+            availableLlmModels.value = requiresToken ? [] : fallbackModels;
           }
         }
       } catch (err) {
-        llmModelsLoadError.value = `Unable to connect to ${selectedProvider}. Using fallback list: ${err.message}`;
+        llmModelsLoadError.value = `Unable to connect to ${selectedProvider}: ${err.message}`;
         console.error(`[Models] Error fetching ${selectedProvider} models:`, err);
-        availableLlmModels.value = fallbackModels;
+        availableLlmModels.value = requiresToken ? [] : fallbackModels;
       } finally {
         const currentModel = (optimizeConfig.value.llm_model || "").trim();
         const canPreserveCurrentModel =
@@ -1202,7 +1349,7 @@ createApp({
         optimizeConfig.value = defaultOptimizeConfig();
         return;
       }
-      const res = await apiFetch("/llm/config");
+      const res = await apiFetch("/v1/llm/config");
       if (!res.ok) {
         optimizeConfigStatus.value = "Failed to load optimize config (" + res.status + ")";
         return;
@@ -1236,7 +1383,7 @@ createApp({
         llm_timeout_seconds: Number(optimizeConfig.value.llm_timeout_seconds) || 300,
         llm_api_token: optimizeConfig.value.llm_api_token || null,
       };
-      const res = await apiFetch("/llm/config", {
+      const res = await apiFetch("/v1/llm/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1293,13 +1440,13 @@ createApp({
       pushOptimizerLog(
         `Using provider=${optimizeConfig.value.effective_llm_provider || optimizeConfig.value.llm_provider}, model=${optimizeConfig.value.effective_llm_model || optimizeConfig.value.llm_model}, timeout=${optimizeConfig.value.effective_llm_timeout_seconds || optimizeConfig.value.llm_timeout_seconds}s.`
       );
-      pushOptimizerLog(`Creating optimization job via /optimize/jobs for target ${endpoint} ...`);
+      pushOptimizerLog(`Creating optimization job via /v1/optimize/jobs for target ${endpoint} ...`);
 
       let res;
       const controller = new AbortController();
       const timeoutId = window.setTimeout(() => controller.abort(), 20000);
       try {
-        res = await apiFetch("/optimize/jobs", {
+        res = await apiFetch("/v1/optimize/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(promptPayload(fields)),
@@ -1390,13 +1537,13 @@ createApp({
 
     const optimizeFromCreate = async () => {
       createOptimizeMenuOpen.value = false;
-      await optimizePrompt("/optimize", form.value, "create", null);
+      await optimizePrompt("/v1/optimize", form.value, "create", null);
     };
 
     const optimizeFromBrowse = async (p) => {
       browseOptimizeMenuKey.value = null;
       await optimizePrompt(
-        "/optimize",
+        "/v1/optimize",
         {
           role: p.role || "",
           task: p.task || "",
@@ -1432,7 +1579,7 @@ createApp({
         return;
       }
 
-      const res = await apiFetch("/prompts/" + target.project + "/" + target.name, {
+      const res = await apiFetch("/v1/prompts/" + target.project + "/" + target.name, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(promptPayload(optimizedDraft.value)),
@@ -1465,7 +1612,7 @@ createApp({
       }
       changePasswordBusy.value = true;
       try {
-        const res = await apiFetch("/auth/me/password", {
+        const res = await apiFetch("/v1/auth/me/password", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1490,7 +1637,7 @@ createApp({
       countdownTimerId = window.setInterval(() => {
         clockNow.value = Date.now();
       }, 1000);
-      fetch("/version").then(r => r.ok ? r.json() : null).then(d => { if (d && d.version) appVersion.value = d.version; }).catch(() => {});
+      fetch("/v1/version").then(r => r.ok ? r.json() : null).then(d => { if (d && d.version) appVersion.value = d.version; }).catch(() => {});
       await fetchAuthStatus();
       if (await loadCurrentUser()) {
         await initializeAuthenticatedApp();
@@ -1520,6 +1667,7 @@ createApp({
       optimizerElapsedPercent, optimizerElapsedSeverity,
       optimizedMarkdown, optimizedDraft,
       optimizeConfig, optimizeConfigStatus, llmProviderOptions, availableLlmModels, llmModelsLoading, llmModelsLoadError,
+      globalConfigEntries, globalConfigLoading, globalConfigStatus,
       roleOptions, projects, projectsLoading, projectsStatus, newProjectForm, editingProjectId, editProjectForm,
       users, usersLoading, usersStatus, newUserForm, editingUserId, editUserForm, availableProjectNames,
       key, togglePrompt, saveNewVersion, saveTags, createPrompt,
@@ -1527,6 +1675,8 @@ createApp({
       optimizeFromCreate,
       optimizeFromBrowse,
       applyOptimizedPrompt, reoptimizePrompt, saveOptimizeConfig, loadAvailableLlmModels, updateProviderBaseUrl, getProviderLabel, modelRequiresToken, closeOptimizerModal,
+      loadGlobalConfig, saveGlobalConfigEntry, resetGlobalConfigDraft,
+      getGlobalConfigControlType, getGlobalConfigOptions, setGlobalConfigBooleanDraft,
       submitAuth, logout, createProjectRecord, beginEditProject, cancelProjectEdit, saveProjectEdit, deleteProjectRecord,
       createUserAccount, beginEditUser, cancelUserEdit, saveUserEdit, deleteUserAccount, loadUsers, loadProjects,
       toggleProjectSelection, isProjectSelected,
@@ -1899,6 +2049,67 @@ createApp({
         </p>
       </div>
 
+      <div v-if="isAdmin" class="opt-config-box opt-config-box-standalone" style="margin-top:14px">
+        <div class="opt-settings-group">
+          <h5>Global Configuration (admin)</h5>
+          <p style="margin:0 0 10px;color:var(--muted);font-size:0.88rem">
+            These values are shared app-wide and stored in global_config.
+          </p>
+          <div class="btn-row" style="margin-bottom:10px">
+            <button class="ghost" @click="loadGlobalConfig" :disabled="globalConfigLoading">
+              {{ globalConfigLoading ? "Loading..." : "Refresh Global Config" }}
+            </button>
+          </div>
+
+          <p v-if="!globalConfigEntries.length && !globalConfigLoading" style="color:var(--muted)">
+            No global config entries returned.
+          </p>
+
+          <div v-for="entry in globalConfigEntries" :key="entry.key" style="padding:10px 0;border-top:1px solid var(--line)">
+            <div class="field" style="margin-bottom:8px">
+              <label>{{ entry.key }}</label>
+              <select
+                v-if="getGlobalConfigControlType(entry) === 'select'"
+                class="select-pretty"
+                v-model="entry.draft"
+              >
+                <option v-for="optionValue in getGlobalConfigOptions(entry)" :key="optionValue" :value="optionValue">
+                  {{ entry.key === 'OPTIMIZER_PROVIDER' ? getProviderLabel(optionValue) : optionValue }}
+                </option>
+              </select>
+              <input
+                v-else-if="getGlobalConfigControlType(entry) === 'integer'"
+                type="number"
+                step="1"
+                v-model="entry.draft"
+              />
+              <label v-else-if="getGlobalConfigControlType(entry) === 'boolean'" class="gc-switch">
+                <input
+                  type="checkbox"
+                  :checked="String(entry.draft || '').toLowerCase() === 'true'"
+                  @change="setGlobalConfigBooleanDraft(entry, $event.target.checked)"
+                />
+                <span class="gc-switch-track"></span>
+                <span class="gc-switch-label">{{ String(entry.draft || '').toLowerCase() === 'true' ? 'Enabled' : 'Disabled' }}</span>
+              </label>
+              <input v-else v-model="entry.draft" />
+            </div>
+            <div class="btn-row">
+              <button class="secondary" @click="saveGlobalConfigEntry(entry)" :disabled="entry.saving || entry.draft === entry.value">
+                {{ entry.saving ? "Saving..." : "Save" }}
+              </button>
+              <button class="ghost" @click="resetGlobalConfigDraft(entry)" :disabled="entry.saving || entry.draft === entry.value">
+                Reset
+              </button>
+            </div>
+          </div>
+
+          <p v-if="globalConfigStatus" :class="globalConfigStatus.includes('Failed') ? 'status-err' : 'status-ok'">
+            {{ globalConfigStatus }}
+          </p>
+        </div>
+      </div>
+
       <div v-if="canViewAdmin" class="admin-panel">
         <div class="admin-panel-header">
           <div>
@@ -2139,25 +2350,6 @@ createApp({
         </div>
 
         <div v-if="!optimizerLoading">
-          <p style="margin:0 0 8px;color:var(--muted)">Mode: Backend</p>
-          <p style="margin:0 0 8px;color:var(--muted)">Engine: {{ optimizerEngine }}</p>
-          <p v-if="optimizerElapsedSeconds !== null" class="optimizer-elapsed" :class="'elapsed-' + optimizerElapsedSeverity">
-            Backend elapsed: {{ optimizerElapsedSeconds.toFixed(2) }}s
-            <span v-if="optimizerElapsedPercent !== null">({{ optimizerElapsedPercent.toFixed(1) }}% of timeout)</span>
-          </p>
-          <p style="margin:0 0 10px;color:var(--muted);font-size:0.9rem">
-            Active profile: {{ optimizeConfig.effective_gp_profile }} | Active model: {{ optimizeConfig.effective_llm_model }} | Active provider: {{ optimizeConfig.effective_llm_provider }} | Timeout: {{ optimizeConfig.effective_llm_timeout_seconds }}s
-          </p>
-
-          <div class="optimizer-notes" v-if="optimizerNotes.length">
-            <div class="optimizer-notes-title">Notes (Markdown)</div>
-            <div
-              class="md-content optimizer-note"
-              v-for="(note, idx) in optimizerNotes"
-              :key="idx"
-              v-html="md(String(note || ''))"
-            ></div>
-          </div>
           <div class="md-content" style="margin-top:10px" v-html="md(optimizedMarkdown || buildPromptMarkdown(optimizedDraft))"></div>
           <div class="btn-row" style="margin-top:12px" v-if="canWrite">
             <button class="secondary" :disabled="optimizerLoading" @click="reoptimizePrompt">Reoptimize</button>

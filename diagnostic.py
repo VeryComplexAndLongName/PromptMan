@@ -5,7 +5,7 @@ import requests
 def run_diagnostic() -> None:
     try:
         # 1) GET config
-        config_url = "http://127.0.0.1:8000/optimize/config"
+        config_url = "http://127.0.0.1:8000/v1/optimize/config"
         print(f"--- Fetching config from {config_url} ---")
         config_resp = requests.get(config_url)
         config_resp.raise_for_status()

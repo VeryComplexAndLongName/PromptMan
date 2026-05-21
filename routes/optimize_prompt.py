@@ -1,8 +1,6 @@
-from loguru import logger
-
 from routes.shared import get_personal_config
+from loguru import logger
 from schemas import PromptData, PromptOptimizeResponse
-
 
 def build_prompt_optimize_response(result) -> PromptOptimizeResponse:  # type: ignore[no-untyped-def]
     optimized_dict = result.optimized_fields

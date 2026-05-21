@@ -95,9 +95,9 @@ def _configure_client_auth(user: HttpUser) -> None:
         return
 
     response = user.client.post(
-        "/auth/login",
+        "/v1/auth/login",
         json={"username": LOADTEST_USERNAME, "password": LOADTEST_PASSWORD},
-        name="POST /auth/login",
+        name="POST /v1/auth/login",
     )
     if response.status_code != 200:
         raise RuntimeError(f"loadtest login failed: status={response.status_code} body={response.text[:200]}")
@@ -119,16 +119,16 @@ def _ensure_seed_data(user: HttpUser) -> None:
             return
 
         user.client.put(
-            "/optimize/config",
+            "/v1/optimize/config",
             json=_optimization_config_payload(),
-            name="PUT /optimize/config",
+            name="PUT /v1/optimize/config",
         )
 
         for index in range(HOT_PROMPT_COUNT):
             with user.client.post(
-                "/prompts",
+                "/v1/prompts",
                 json=_hot_prompt_payload(index),
-                name="POST /prompts [seed]",
+                name="POST /v1/prompts [seed]",
                 catch_response=True,
             ) as response:
                 if response.status_code in (200, 201, 400, 409):
@@ -153,11 +153,11 @@ class ReadOnlyUser(AuthenticatedUser):
 
     @task(6)
     def list_prompts(self) -> None:
-        self.client.get("/prompts?limit=25&offset=0", name="GET /prompts")
+        self.client.get("/v1/prompts?limit=25&offset=0", name="GET /v1/prompts")
 
     @task(2)
     def search_by_tag(self) -> None:
-        self.client.get("/prompts/search?tags=load&mode=or", name="GET /prompts/search")
+        self.client.get("/v1/prompts/search?tags=load&mode=or", name="GET /v1/prompts/search")
 
 
 class CrudUser(AuthenticatedUser):
@@ -169,7 +169,7 @@ class CrudUser(AuthenticatedUser):
         uid = _rand_suffix(10)
         payload = _random_prompt_payload(uid)
 
-        create_resp = self.client.post("/prompts", json=payload, name="POST /prompts")
+        create_resp = self.client.post("/v1/prompts", json=payload, name="POST /v1/prompts")
         if create_resp.status_code not in (200, 201):
             return
 
@@ -183,15 +183,15 @@ class CrudUser(AuthenticatedUser):
             "tags": ["load", "perf", "updated"],
         }
         self.client.put(
-            f"/prompts/{PROJECT}/prompt_{uid}",
+            f"/v1/prompts/{PROJECT}/prompt_{uid}",
             json=update_payload,
-            name="PUT /prompts/{project}/{name}",
+            name="PUT /v1/prompts/{project}/{name}",
         )
 
     @task(2)
     def read_prompt(self) -> None:
         # Reads are expected to dominate, even for CRUD users.
-        self.client.get("/prompts?limit=10&offset=0", name="GET /prompts")
+        self.client.get("/v1/prompts?limit=10&offset=0", name="GET /v1/prompts")
 
 
 class OptimizeUser(AuthenticatedUser):
@@ -201,7 +201,7 @@ class OptimizeUser(AuthenticatedUser):
     @task(1)
     def optimize_leo(self) -> None:
         payload = _cached_optimize_payload()
-        self.client.post("/optimize", json=payload, name="POST /optimize", timeout=120)
+        self.client.post("/v1/optimize", json=payload, name="POST /v1/optimize", timeout=120)
 
 
 class CacheReadUser(AuthenticatedUser):
@@ -210,27 +210,27 @@ class CacheReadUser(AuthenticatedUser):
 
     @task(5)
     def hot_prompt_detail(self) -> None:
-        self.client.get(f"/prompts/{PROJECT}/{_hot_prompt_name(0)}", name="GET /prompts/{project}/{name} [hot]")
+        self.client.get(f"/v1/prompts/{PROJECT}/{_hot_prompt_name(0)}", name="GET /v1/prompts/{project}/{name} [hot]")
 
     @task(4)
     def hot_prompt_list(self) -> None:
         self.client.get(
-            f"/prompts?project={PROJECT}&limit=10&offset=0",
-            name="GET /prompts [hot]",
+            f"/v1/prompts?project={PROJECT}&limit=10&offset=0",
+            name="GET /v1/prompts [hot]",
         )
 
     @task(3)
     def hot_prompt_search(self) -> None:
         self.client.get(
-            f"/prompts/search?tags=cache&mode=or&project={PROJECT}",
-            name="GET /prompts/search [hot]",
+            f"/v1/prompts/search?tags=cache&mode=or&project={PROJECT}",
+            name="GET /v1/prompts/search [hot]",
         )
 
     @task(2)
     def hot_versions(self) -> None:
         self.client.get(
-            f"/prompts/{PROJECT}/{_hot_prompt_name(0)}/versions",
-            name="GET /prompts/{project}/{name}/versions [hot]",
+            f"/v1/prompts/{PROJECT}/{_hot_prompt_name(0)}/versions",
+            name="GET /v1/prompts/{project}/{name}/versions [hot]",
         )
 
 
@@ -240,7 +240,7 @@ class CacheOptimizeUser(AuthenticatedUser):
 
     @task(2)
     def hot_optimize(self) -> None:
-        self.client.post("/optimize", json=_cached_optimize_payload(), name="POST /optimize [hot]", timeout=120)
+        self.client.post("/v1/optimize", json=_cached_optimize_payload(), name="POST /v1/optimize [hot]", timeout=120)
 
 
 class ColdOptimizeUser(AuthenticatedUser):
@@ -249,4 +249,4 @@ class ColdOptimizeUser(AuthenticatedUser):
 
     @task(1)
     def cold_optimize(self) -> None:
-        self.client.post("/optimize", json=_cold_optimize_payload(), name="POST /optimize [cold]", timeout=120)
+        self.client.post("/v1/optimize", json=_cold_optimize_payload(), name="POST /v1/optimize [cold]", timeout=120)

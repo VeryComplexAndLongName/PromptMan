@@ -13,6 +13,7 @@ from cache.shared_cache import (
     build_optimization_cache_key,
     cache_get_or_set,
 )
+import app_settings
 from optimizer.leo_backend import LeoPromptOptimizerBackend
 from optimizer.provider_catalog import get_llm_provider_models, list_llm_provider_entries
 from optimizer.result import OptimizationResult
@@ -89,51 +90,61 @@ _runtime_optimize_config: dict[str, Any] = {
 
 
 def build_optimizer_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    source: Mapping[str, Any]
-    if overrides is None:
-        with _runtime_config_lock:
-            source = dict(_runtime_optimize_config)
+    # Settings layer (loaded from DB at startup, defaults from _DEFAULTS)
+    env_provider = app_settings.get("OPTIMIZER_PROVIDER", "openai")
+    env_model = app_settings.get("OPTIMIZER_MODEL", "gpt-4o-mini")
+    env_base_url = app_settings.get("OPTIMIZER_BASE_URL", "")
+    env_timeout = app_settings.get_int("OPTIMIZER_TIMEOUT_SECONDS", 120)
+    env_api_token = app_settings.get("OPTIMIZER_API_TOKEN", "") or None
+
+    # Per-request overrides layer (runtime config or per-user config)
+    rt = overrides or {}
+    # Accept both runtime payload keys (llm_*) and serialized effective keys
+    # so callers can pass config snapshots from auth.serialize_optimizer_config.
+    rt_provider = rt.get("llm_provider") or rt.get("effective_llm_provider")
+    rt_model = rt.get("llm_model") or rt.get("effective_llm_model")
+    rt_base_url = rt.get("llm_base_url") if rt.get("llm_base_url") is not None else rt.get("effective_llm_base_url")
+    rt_timeout = rt.get("llm_timeout_seconds") if rt.get("llm_timeout_seconds") is not None else rt.get("effective_llm_timeout_seconds")
+    rt_api_token: str | None = rt.get("llm_api_token") or rt.get("effective_llm_api_token")           # plain-text override
+    rt_token_enc: str | None = rt.get("llm_api_token_encrypted")  # pre-encrypted override
+
+    # Effective (runtime wins over env)
+    effective_provider = ((rt_provider or "").strip().lower() or env_provider) or "openai"
+    effective_model = ((rt_model or "").strip() or env_model) or "gpt-4o-mini"
+    effective_base_url = rt_base_url if rt_base_url is not None else env_base_url
+    effective_timeout = int(rt_timeout) if rt_timeout is not None else env_timeout
+
+    # Resolve token: plain-text override → encrypted override → env token
+    if rt_api_token:
+        effective_token_enc = _encrypt_token(rt_api_token)
+    elif rt_token_enc:
+        effective_token_enc = rt_token_enc
+    elif env_api_token:
+        effective_token_enc = _encrypt_token(env_api_token)
     else:
-        source = overrides
+        effective_token_enc = None
 
-    runtime_provider = source.get("llm_provider", source.get("runtime_llm_provider"))
-    runtime_model = source.get("llm_model", source.get("runtime_llm_model"))
-    runtime_base_url = source.get("llm_base_url", source.get("runtime_llm_base_url"))
-    runtime_timeout_seconds = source.get("llm_timeout_seconds", source.get("runtime_llm_timeout_seconds"))
-    runtime_api_token = source.get("llm_api_token", source.get("effective_llm_api_token"))
-    runtime_api_token_encrypted = source.get("llm_api_token_encrypted")
-
-    env_provider = os.getenv("OPTIMIZER_PROVIDER", os.getenv("OPTIMIZE_LLM_PROVIDER", "")).strip().lower() or None
-    env_model = os.getenv("OPTIMIZER_MODEL", os.getenv("OPTIMIZE_LLM_MODEL", "")).strip() or None
-    env_base_url = os.getenv("OPTIMIZER_BASE_URL", os.getenv("OLLAMA_BASE_URL", "")).strip() or None
-    env_api_token_encrypted = os.getenv("OPTIMIZER_API_TOKEN", os.getenv("OPTIMIZE_LLM_API_TOKEN", "")).strip() or None
-    env_timeout_raw = os.getenv("OPTIMIZER_TIMEOUT_SECONDS", os.getenv("OPTIMIZE_LLM_TIMEOUT_SECONDS", "")).strip()
-    env_timeout_seconds = int(env_timeout_raw) if env_timeout_raw.isdigit() else None
-
-    effective_provider = (runtime_provider or env_provider or "openai").strip().lower()
-    default_models = get_llm_provider_models(effective_provider)
-    fallback_model = default_models[0] if default_models else "gpt-4o-mini"
-    effective_model = (runtime_model or env_model or fallback_model).strip()
-    effective_base_url = (runtime_base_url or env_base_url or "").strip()
-    effective_timeout_seconds = int(runtime_timeout_seconds or env_timeout_seconds or 120)
-    effective_api_token = runtime_api_token or _decrypt_token(runtime_api_token_encrypted or env_api_token_encrypted)
+    effective_api_token = _decrypt_token(effective_token_enc)
 
     return {
-        "runtime_llm_provider": runtime_provider,
-        "runtime_llm_model": runtime_model,
-        "runtime_llm_base_url": runtime_base_url,
-        "runtime_llm_timeout_seconds": runtime_timeout_seconds,
-        "runtime_has_llm_api_token": runtime_api_token_encrypted is not None,
+        # Runtime / per-user override layer
+        "runtime_llm_provider": rt_provider,
+        "runtime_llm_model": rt_model,
+        "runtime_llm_base_url": rt_base_url,
+        "runtime_llm_timeout_seconds": rt_timeout,
+        "runtime_has_llm_api_token": bool(rt_token_enc or rt_api_token),
+        # Settings / env layer
         "env_llm_provider": env_provider,
         "env_llm_model": env_model,
         "env_llm_base_url": env_base_url,
-        "env_llm_timeout_seconds": env_timeout_seconds,
-        "env_has_llm_api_token": env_api_token_encrypted is not None,
+        "env_llm_timeout_seconds": env_timeout,
+        "env_has_llm_api_token": bool(env_api_token),
+        # Effective (merged) layer – used by backends and schema
         "effective_llm_provider": effective_provider,
         "effective_llm_model": effective_model,
         "effective_llm_base_url": effective_base_url,
-        "effective_llm_timeout_seconds": effective_timeout_seconds,
-        "effective_has_llm_api_token": effective_api_token is not None,
+        "effective_llm_timeout_seconds": effective_timeout,
+        "effective_has_llm_api_token": bool(effective_token_enc),
         "effective_llm_api_token": effective_api_token,
     }
 
@@ -196,7 +207,7 @@ _BACKEND_REGISTRY: dict[str, PromptOptimizerBackend] = {
 
 
 def get_active_optimizer_backend_name() -> str:
-    configured = os.getenv("OPTIMIZER_BACKEND", "leo").strip().lower() or "leo"
+    configured = app_settings.get("OPTIMIZER_BACKEND", "leo").strip().lower() or "leo"
     if configured not in _BACKEND_REGISTRY:
         logger.warning("optimize.backend.unknown configured={} fallback=leo", configured)
         return "leo"

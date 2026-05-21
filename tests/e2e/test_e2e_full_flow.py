@@ -25,21 +25,21 @@ def test_end_to_end_all_endpoints(client, sample_prompt_payload, monkeypatch):  
     assert client.get("/docs").status_code == 200
 
     # Create and list/get
-    assert client.post("/prompts", json=sample_prompt_payload).status_code == 200
-    assert client.get("/prompts").status_code == 200
-    prompt = client.get("/prompts/payments/checkout-system").json()
+    assert client.post("/v1/prompts", json=sample_prompt_payload).status_code == 200
+    assert client.get("/v1/prompts").status_code == 200
+    prompt = client.get("/v1/prompts/payments/checkout-system").json()
     assert prompt["latest_version"] == 1
 
     # Search both modes
     and_search = client.get(
-        "/prompts/search",
+        "/v1/prompts/search",
         params=[("tags", "system"), ("tags", "production"), ("mode", "and")],
     )
     assert and_search.status_code == 200
     assert len(and_search.json()) == 1
 
     or_search = client.get(
-        "/prompts/search",
+        "/v1/prompts/search",
         params=[("tags", "missing"), ("tags", "production"), ("mode", "or")],
     )
     assert or_search.status_code == 200
@@ -47,7 +47,7 @@ def test_end_to_end_all_endpoints(client, sample_prompt_payload, monkeypatch):  
 
     # Runtime optimize config endpoints
     put_cfg = client.put(
-        "/optimize/config",
+        "/v1/optimize/config",
         json={
             "llm_provider": "ollama",
             "llm_model": "qwen2.5:0.5b",
@@ -58,31 +58,31 @@ def test_end_to_end_all_endpoints(client, sample_prompt_payload, monkeypatch):  
     assert put_cfg.status_code == 200
     assert put_cfg.json()["effective_llm_provider"] == "ollama"
     assert put_cfg.json()["effective_llm_model"] == "qwen2.5:0.5b"
-    assert client.get("/optimize/config").status_code == 200
+    assert client.get("/v1/optimize/config").status_code == 200
 
     # Optimize with Leo engine
-    leo_opt = client.post("/optimize", json=sample_prompt_payload)
+    leo_opt = client.post("/v1/optimize", json=sample_prompt_payload)
     assert leo_opt.status_code == 200
     leo_payload = leo_opt.json()["optimized"]
     assert "optimized by Leo" in leo_payload["task"]
 
     # Save optimized prompt as new version
-    update_response = client.put("/prompts/payments/checkout-system", json=leo_payload)
+    update_response = client.put("/v1/prompts/payments/checkout-system", json=leo_payload)
     assert update_response.status_code == 200
     assert update_response.json()["version"] == 2
 
     # Update tags
     tags_response = client.put(
-        "/prompts/payments/checkout-system/tags",
+        "/v1/prompts/payments/checkout-system/tags",
         json={"tags": ["optimized", "critical"]},
     )
     assert tags_response.status_code == 200
 
     # Versions endpoints
-    versions = client.get("/prompts/payments/checkout-system/versions")
+    versions = client.get("/v1/prompts/payments/checkout-system/versions")
     assert versions.status_code == 200
     assert len(versions.json()) == 2
 
-    v1 = client.get("/prompts/payments/checkout-system/versions/1")
+    v1 = client.get("/v1/prompts/payments/checkout-system/versions/1")
     assert v1.status_code == 200
     assert v1.json()["version"] == 1

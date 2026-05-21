@@ -14,7 +14,7 @@ try:
 except ImportError:
     requests = None
 
-from optimizer.provider_catalog import get_llm_provider_models
+from optimizer.provider_catalog import get_llm_provider_entry, get_llm_provider_models
 from optimizer.base import PromptOptimizerBackend
 from optimizer.result import OptimizationResult
 from optimizer.utils import (
@@ -195,6 +195,75 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
             return MistralProvider(api_key=api_token), "mistral"
 
         raise ValueError(f"Unsupported provider: {normalized}")
+
+    def _discover_openai_compatible_models(
+        self,
+        *,
+        base_url: str,
+        api_token: str,
+        timeout_seconds: int,
+        provider_name: str,
+    ) -> list[str]:
+        models_url = f"{base_url.rstrip('/')}/models"
+        headers = {"Authorization": f"Bearer {api_token}"}
+        if requests:
+            response = requests.get(models_url, headers=headers, timeout=timeout_seconds)
+            response.raise_for_status()
+            payload = response.json()
+        else:
+            from urllib import request as urllib_request
+
+            req = urllib_request.Request(models_url, headers=headers)
+            with urllib_request.urlopen(req, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+        data = payload.get("data") if isinstance(payload, dict) else []
+        result = sorted({str(item.get("id", "")).strip() for item in (data or []) if isinstance(item, dict) and item.get("id")})
+        logger.info("list_models.{}.success count={}", provider_name, len(result))
+        return result
+
+    def _discover_anthropic_models(self, *, api_token: str, timeout_seconds: int) -> list[str]:
+        models_url = "https://api.anthropic.com/v1/models"
+        headers = {
+            "x-api-key": api_token,
+            "anthropic-version": "2023-06-01",
+        }
+        if requests:
+            response = requests.get(models_url, headers=headers, timeout=timeout_seconds)
+            response.raise_for_status()
+            payload = response.json()
+        else:
+            from urllib import request as urllib_request
+
+            req = urllib_request.Request(models_url, headers=headers)
+            with urllib_request.urlopen(req, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+        data = payload.get("data") if isinstance(payload, dict) else []
+        return sorted({str(item.get("id", "")).strip() for item in (data or []) if isinstance(item, dict) and item.get("id")})
+
+    def _discover_gemini_models(self, *, api_token: str, timeout_seconds: int) -> list[str]:
+        models_url = f"https://generativelanguage.googleapis.com/v1/models?key={api_token}"
+        if requests:
+            response = requests.get(models_url, timeout=timeout_seconds)
+            response.raise_for_status()
+            payload = response.json()
+        else:
+            from urllib import request as urllib_request
+
+            with urllib_request.urlopen(models_url, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+        models = payload.get("models") if isinstance(payload, dict) else []
+        names: list[str] = []
+        for item in models or []:
+            if not isinstance(item, dict):
+                continue
+            raw_name = str(item.get("name", "")).strip()
+            if not raw_name:
+                continue
+            names.append(raw_name.split("/", 1)[-1])
+        return sorted(set(names))
 
     def optimize(self, fields: Mapping[str, str | None], config: Mapping[str, Any]) -> OptimizationResult:
         from leo_prompt_optimizer import LeoOptimizer
@@ -380,6 +449,30 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
                 return []
             except Exception as exc:
                 logger.warning("list_models.ollama.error failed to fetch models from {} ({}): {}", tags_url, type(exc).__name__, exc)
+                return []
+
+        entry = get_llm_provider_entry(normalized)
+        if entry and entry.requires_api_token:
+            token = (api_token or "").strip()
+            if not token:
+                logger.info("list_models.{}.skip missing_api_token", normalized)
+                return []
+
+            provider_base_url = (base_url or "").strip() or entry.base_url
+            try:
+                if normalized in {"openai", "groq", "mistral"}:
+                    return self._discover_openai_compatible_models(
+                        base_url=provider_base_url,
+                        api_token=token,
+                        timeout_seconds=timeout_seconds,
+                        provider_name=normalized,
+                    )
+                if normalized == "anthropic":
+                    return self._discover_anthropic_models(api_token=token, timeout_seconds=timeout_seconds)
+                if normalized == "gemini":
+                    return self._discover_gemini_models(api_token=token, timeout_seconds=timeout_seconds)
+            except Exception as exc:
+                logger.warning("list_models.{}.error dynamic_discovery_failed: {}", normalized, exc)
                 return []
 
         return get_llm_provider_models(normalized)
