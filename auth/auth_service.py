@@ -310,8 +310,8 @@ def maybe_bootstrap_admin(db: Session) -> None:
     crud.ensure_default_roles(db)
     if crud.list_users(db):
         return
-    username = (os.getenv("BOOTSTRAP_ADMIN_USERNAME") or _DEFAULT_BOOTSTRAP_ADMIN_USERNAME).strip()
-    password = (os.getenv("BOOTSTRAP_ADMIN_PASSWORD") or _DEFAULT_BOOTSTRAP_ADMIN_PASSWORD).strip()
+    username = os.getenv("BOOTSTRAP_ADMIN_USERNAME", _DEFAULT_BOOTSTRAP_ADMIN_USERNAME)
+    password = os.getenv("BOOTSTRAP_ADMIN_PASSWORD", _DEFAULT_BOOTSTRAP_ADMIN_PASSWORD)
     logger.warning("auth.bootstrap.default_admin_created username={}", username)
     create_user_record(db, username=username, password=password, role="admin", is_active=True, projects=[])
 
@@ -319,3 +319,4 @@ def maybe_bootstrap_admin(db: Session) -> None:
 def list_roles_out(db: Session) -> list[dict[str, Any]]:
     crud.ensure_default_roles(db)
     return [{"id": role.id, "name": role.name} for role in crud.list_roles(db)]
+

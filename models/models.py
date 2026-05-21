@@ -1,6 +1,7 @@
 import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -136,6 +137,19 @@ class Config(Base):
     user: Mapped["User"] = relationship("User", back_populates="config")
 
 
+class CacheRequest(Base):
+    __tablename__ = "cache_requests"
+    __table_args__ = (
+        UniqueConstraint("cache_key", name="uq_cache_requests_cache_key"),
+        CheckConstraint("trim(cache_key) <> ''", name="ck_cache_requests_cache_key_not_blank"),
+    )
+
+    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
+    cache_key: Mapped[str] = Column(String, nullable=False, index=True)  # type: ignore[assignment]
+    payload: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]
+    lru: Mapped[int] = Column(BigInteger, nullable=False, default=0)  # type: ignore[assignment]
+
+
 class Tag(Base):
     __tablename__ = "tags"
 
@@ -174,3 +188,11 @@ class PromptVersion(Base):
 
     prompt: Mapped["Prompt"] = relationship("Prompt", back_populates="versions")
     created_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], back_populates="created_prompt_versions")
+
+
+class GlobalConfig(Base):
+    __tablename__ = "global_config"
+
+    key = Column(String, primary_key=True, index=True)
+    value = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)  # Optional: for admin UI context

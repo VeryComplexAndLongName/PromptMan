@@ -736,8 +736,7 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
 
 .optimizer-notes {
   margin: 8px 0 10px;
-  display: grid;
-  gap: 8px;
+  display: block;
 }
 
 .optimizer-notes-title {
@@ -747,12 +746,15 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
   letter-spacing: 0.06em;
 }
 
-.optimizer-note {
-  margin-top: 0;
-  padding: 8px 10px;
-  border: 1px solid rgba(23,32,38,0.12);
-  border-radius: 10px;
-  background: rgba(38,102,127,0.04);
+.optimizer-notes-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.optimizer-note-item {
+  margin: 2px 0;
+  color: var(--ink);
+  font-size: 0.9rem;
 }
 
 .opt-config-box {
@@ -787,6 +789,54 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
 
 .opt-refresh-btn {
   min-width: 150px;
+}
+
+.gc-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.gc-switch input {
+  display: none;
+}
+
+.gc-switch-track {
+  position: relative;
+  width: 88px;
+  height: 48px;
+  border-radius: 999px;
+  background: rgba(23, 32, 38, 0.2);
+  border: 1px solid rgba(23, 32, 38, 0.25);
+  transition: background-color 0.18s ease;
+}
+
+.gc-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s ease;
+}
+
+.gc-switch input:checked + .gc-switch-track {
+  background: rgba(38, 102, 127, 0.75);
+  border-color: rgba(38, 102, 127, 0.95);
+}
+
+.gc-switch input:checked + .gc-switch-track::after {
+  transform: translateX(40px);
+}
+
+.gc-switch-label {
+  font-size: 0.9rem;
+  color: var(--ink);
 }
 
 .opt-settings-group-gp {

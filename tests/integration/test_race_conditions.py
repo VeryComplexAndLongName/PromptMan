@@ -26,8 +26,15 @@ def test_http_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path
         db_path = tmp_path / "race_http.db"
         engine = create_engine(
             f"sqlite:///{db_path}",
-            connect_args={"check_same_thread": False},
+            connect_args={"check_same_thread": False, "timeout": 30},
         )
+        from sqlalchemy import event as _sa_event
+
+        @_sa_event.listens_for(engine, "connect")
+        def _set_wal_mode(dbapi_conn, _rec):
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.close()
     testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -52,7 +59,7 @@ def test_http_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path
 
         with TestClient(app) as admin_client:
             login_response = admin_client.post(
-                "/auth/login",
+                "/v1/auth/login",
                 json={"username": "admin", "password": "admin"},
             )
             assert login_response.status_code == 200
@@ -60,7 +67,7 @@ def test_http_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path
 
             run_id = "race-http"
             create_project_response = admin_client.post(
-                "/projects",
+                "/v1/projects",
                 headers={"Authorization": f"Bearer {token}"},
                 json={"name": f"project-{run_id}"},
             )
@@ -80,8 +87,8 @@ def test_http_concurrent_create_prompt_with_shared_new_tag_is_race_safe(tmp_path
                         "output_format": "text",
                         "examples": f"example-{run_id}-{index}",
                     }
-                    create_response = worker_client.post("/prompts", json=payload)
-                    list_response = worker_client.get("/prompts", params={"project": f"project-{run_id}"})
+                    create_response = worker_client.post("/v1/prompts", json=payload)
+                    list_response = worker_client.get("/v1/prompts", params={"project": f"project-{run_id}"})
                     return create_response.status_code, list_response.status_code
 
             with ThreadPoolExecutor(max_workers=8) as pool:

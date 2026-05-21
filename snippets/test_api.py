@@ -7,10 +7,10 @@ client = TestClient(app)
 
 def test_optimize_config():  # type: ignore[no-untyped-def]
     payload = {"gp_profile": "quality", "rounds": 3}
-    put_response = client.put("/optimize/config", json=payload)
+    put_response = client.put("/v1/optimize/config", json=payload)
     assert put_response.status_code == 200, f"PUT failed: {put_response.text}"
 
-    get_response = client.get("/optimize/config")
+    get_response = client.get("/v1/optimize/config")
     assert get_response.status_code == 200, f"GET failed: {get_response.text}"
 
     data = get_response.json()

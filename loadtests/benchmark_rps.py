@@ -15,8 +15,8 @@ from pathlib import Path
 import requests
 
 SCENARIO_TARGET_NAMES = {
-    "optimize_hot": "POST /optimize [hot]",
-    "optimize_cold": "POST /optimize [cold]",
+    "optimize_hot": "POST /v1/optimize [hot]",
+    "optimize_cold": "POST /v1/optimize [cold]",
 }
 
 

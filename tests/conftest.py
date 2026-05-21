@@ -75,7 +75,7 @@ def client(db_session: Session) -> Iterator[TestClient]:
     main.init_database = lambda bind=None: Base.metadata.create_all(bind=db_session.get_bind())
     with TestClient(app) as test_client:
         login_response = test_client.post(
-            "/auth/login",
+            "/v1/auth/login",
             json={"username": "admin", "password": "admin"},
         )
         if login_response.status_code != 200:

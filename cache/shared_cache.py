@@ -4,25 +4,15 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
+import app_settings
 from cache.ttl_cache import SharedTTLCache
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
 
-def _canonical_json(payload: Any) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
-
-
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _normalize_text(value: Any) -> str:
-    return str(value or "").strip()
-
-
 _shared_cache = SharedTTLCache()
+
 
 PROMPT_CACHE_TTL_SECONDS = 300
 OPTIMIZATION_CACHE_TTL_SECONDS = 300
@@ -32,23 +22,36 @@ OPTIMIZATION_CACHE_PREFIX = "optimize:"
 
 
 def clear_shared_cache(prefix: str | None = None) -> None:
-    _shared_cache.clear(prefix)
+    if _is_cache_enabled():
+        _shared_cache.clear(prefix)
 
 
 def delete_shared_cache_entry(key: str) -> None:
-    _shared_cache.delete(key)
+    if _is_cache_enabled():
+        _shared_cache.delete(key)
 
 
 def get_shared_cache_entry(key: str) -> Any | None:
-    return _shared_cache.get(key)
+    if _is_cache_enabled():
+        return _shared_cache.get(key)
+    return None
 
 
 def set_shared_cache_entry(key: str, value: Any, ttl_seconds: int) -> None:
-    _shared_cache.set(key, value, ttl_seconds)
+    if _is_cache_enabled():
+        _shared_cache.set(key, value, ttl_seconds)
 
 
 def cache_get_or_set(key: str, ttl_seconds: int, factory: Callable[[], Any]) -> Any:
+    if not _is_cache_enabled():
+        return factory()
     return _shared_cache.get_or_set(key, ttl_seconds, factory)
+
+
+def get_hot_prompt_cache_entries(limit: int) -> list[tuple[str, Any]]:
+    if not _is_cache_enabled():
+        return []
+    return _shared_cache.get_hot_entries(limit, prefix=PROMPT_CACHE_PREFIX)
 
 
 def build_prompt_response_cache_key(project: str, name: str) -> str:
@@ -111,3 +114,19 @@ def build_optimization_cache_key(fields: Mapping[str, str | None], config: Mappi
         "config": normalized_config,
     }
     return f"{OPTIMIZATION_CACHE_PREFIX}{_sha256_text(_canonical_json(payload))}"
+
+
+def _is_cache_enabled() -> bool:
+    return app_settings.get_bool("PROMPTMAN_CACHE_ENABLED", default=True)
+
+
+def _canonical_json(payload: Any) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()

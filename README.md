@@ -46,7 +46,7 @@ The project is aimed at small and medium teams that need concurrent multi-user a
 - Admin UI for project CRUD, user CRUD, and project access assignment.
 - Normalized database schema with dedicated `projects` and `roles` tables.
 - Prompt audit metadata: created/updated timestamps plus the user who made the change.
-- Semantic Versioning (SemVer) with runtime version endpoint (`GET /version`).
+- Semantic Versioning (SemVer) with runtime version endpoint (`GET /v1/version`).
 - Sensitive config values encrypted at rest.
 - Automatic database migration on startup.
 - Default bootstrap admin support for first run.
@@ -66,7 +66,7 @@ Current application version is defined in [pyproject.toml](pyproject.toml) under
 At runtime the app exposes version info via:
 
 ```text
-GET /version
+GET /v1/version
 ```
 
 Example response:
@@ -133,7 +133,7 @@ On startup the app applies Alembic migrations automatically before serving reque
 The application is protected by authentication for both UI and API access.
 
 - On a clean database, the login screen switches into bootstrap mode.
-- The first admin can be created through `POST /auth/bootstrap-admin` or from the UI.
+- The first admin can be created through `POST /v1/auth/bootstrap-admin` or from the UI.
 - Startup also ensures a default admin exists when the database is empty.
 - Current default bootstrap credentials are `admin` / `admin`.
 
@@ -143,7 +143,7 @@ Session behavior:
 
 - Access token lifetime is 30 minutes.
 - Login/bootstrap returns both an access token and a refresh token.
-- `POST /auth/refresh` issues a new token pair when the access token has expired but the refresh token is still valid.
+- `POST /v1/auth/refresh` issues a new token pair when the access token has expired but the refresh token is still valid.
 - The UI refreshes the session automatically on `401` caused by an expired access token.
 - The UI also schedules a proactive refresh 1-3 minutes before access token expiry.
 
@@ -254,6 +254,26 @@ Visible for admins only.
 
 Viewer does not have access to this tab.
 
+### Global Config In UI
+
+Visible for admins in the Config tab.
+
+- Load all keys from `GET /v1/admin/config/`.
+- Save one key via `PUT /v1/admin/config/{key}?value=...`.
+- Values are app-wide (shared), not per-user.
+- Typical managed keys:
+  - `PROMPTMAN_CACHE_ENABLED`
+  - `PROMPTMAN_CACHE_MAX_ENTRIES`
+  - `PROMPTMAN_CACHE_PERSISTENCE_ENABLED`
+  - `PROMPTMAN_CACHE_PERSISTENCE_LIMIT`
+  - `OPTIMIZER_PROVIDER`
+  - `OPTIMIZER_MODEL`
+  - `OPTIMIZER_BASE_URL`
+  - `OPTIMIZER_TIMEOUT_SECONDS`
+  - `OPTIMIZER_API_TOKEN`
+  - `OPTIMIZER_BACKEND`
+  - `OLLAMA_BASE_URL`
+
 ### Optimization Modal
 
 - Shows optimization engine, notes, execution log, and composed markdown.
@@ -272,10 +292,10 @@ Viewer does not have access to this tab.
 
 Each user has a separate optimization config row in `configs`.
 
-- `GET /optimize/config` returns the current user's config.
-- `PUT /optimize/config` updates the current user's config.
-- `POST /optimize` uses the current user's config.
-- `GET /optimize/providers/{provider}/models` uses the current user's config as the default override source.
+- `GET /v1/optimize/config` returns the current user's config.
+- `PUT /v1/optimize/config` updates the current user's config.
+- `POST /v1/optimize` uses the current user's config.
+- `GET /v1/optimize/providers/{provider}/models` uses the current user's config as the default override source.
 
 One user's changes do not modify another user's config.
 
@@ -286,7 +306,7 @@ One user's changes do not modify another user's config.
 Endpoint:
 
 ```text
-POST /optimize
+POST /v1/optimize
 ```
 
 - Main UI optimize path.
@@ -323,11 +343,11 @@ Profiles:
 Endpoint:
 
 ```text
-GET /optimize/providers/{provider}/models
+GET /v1/optimize/providers/{provider}/models
 ```
 
 - Ollama: discovered via provider API.
-- OpenAI: discovered via provider API when a token is supplied.
+- OpenAI: no fixed built-in discovery list is returned by this service.
 - OpenAI + local Ollama base URL: discovered through Ollama `/api/tags` compatibility path.
 - Anthropic: fixed built-in list.
 
@@ -357,7 +377,7 @@ GET /optimize/providers/{provider}/models
 ## Environment Variables
 
 - `DATABASE_URL`
-  - default: `sqlite:///./prompts.db`
+  - default: `sqlite:///./v1/prompts.db`
 - `BOOTSTRAP_ADMIN_USERNAME`
   - optional first-run admin username override
 - `BOOTSTRAP_ADMIN_PASSWORD`
@@ -369,6 +389,15 @@ GET /optimize/providers/{provider}/models
   - see [First Run And Authentication](#first-run-and-authentication) for setup instructions
 - `PROMPTMAN_KEY_PREVIOUS`
   - optional comma-separated list of older keys used for decryption fallback during key rotation/migration
+- `PROMPTMAN_CACHE_ENABLED`
+  - enable/disable built-in in-memory cache (default: `true`)
+  - set to `false`, `0`, `no`, or `off` to disable; use this when deploying Redis or other external cache
+  - when disabled, cache functions bypass in-memory storage and execute requests directly
+- `PROMPTMAN_CACHE_PERSISTENCE_ENABLED`
+  - enable/disable cache persistence to the `cache_requests` table (default: `true`)
+  - set to `false`, `0`, `no`, or `off` to skip saving hot prompt cache entries on shutdown and skip prewarming on startup
+- `PROMPTMAN_CACHE_PERSISTENCE_LIMIT`
+  - maximum number of hot prompt cache entries to persist and prewarm (default: `100`)
 - `OPTIMIZER_BACKEND`
   - active optimizer backend name (default: `leo`)
 - `OPTIMIZER_MODEL_ID`
@@ -388,25 +417,32 @@ GET /optimize/providers/{provider}/models
 - `OPTIMIZER_API_TOKEN`
   - fallback encrypted token source
 
-Per-user config returned by `/optimize/config` takes precedence over environment defaults for that user's optimize flows.
+Per-user config returned by `/v1/optimize/config` takes precedence over environment defaults for that user's optimize flows.
+
+Cache lifecycle behavior:
+
+- The application persists the hottest prompt-read cache entries into the `cache_requests` table during shutdown.
+- On startup, it loads those rows back and prewarms the in-memory cache.
+- Only non-destructive prompt read paths are included in this persistence flow.
+- This is useful when you want faster first requests after restart without deploying an external cache.
 
 For Docker with a mounted database volume, keep `PROMPTMAN_KEY` stable between image updates/recreates. Example:
 
 ```powershell
-docker run --name prompt-man --restart unless-stopped -p 8000:8000 -e DATABASE_URL=sqlite:////data/prompts.db -e PROMPTMAN_KEY="your-long-stable-secret" -v promptman-data:/data verycomplexandlongname/prompt-man:0.1.5
+docker run --name prompt-man --restart unless-stopped -p 8000:8000 -e DATABASE_URL=sqlite:////data/v1/prompts.db -e PROMPTMAN_KEY="your-long-stable-secret" -v promptman-data:/data verycomplexandlongname/prompt-man:0.1.5
 ```
 
 ## API Surface
 
 ### Auth
 
-- `POST /auth/bootstrap-admin`
-- `POST /auth/login`
-- `POST /auth/refresh`
-- `GET /auth/status`
-- `GET /auth/me`
+- `POST /v1/auth/bootstrap-admin`
+- `POST /v1/auth/login`
+- `POST /v1/auth/refresh`
+- `GET /v1/auth/status`
+- `GET /v1/auth/me`
 
-`POST /auth/login`, `POST /auth/bootstrap-admin`, and `POST /auth/refresh` return:
+`POST /v1/auth/login`, `POST /v1/auth/bootstrap-admin`, and `POST /v1/auth/refresh` return:
 
 - `access_token`
 - `refresh_token`
@@ -418,42 +454,50 @@ docker run --name prompt-man --restart unless-stopped -p 8000:8000 -e DATABASE_U
 
 ### Roles
 
-- `GET /roles`
+- `GET /v1/roles`
 
 Admin-only read of available RBAC roles.
 
+### Admin Global Config
+
+- `GET /v1/admin/config/`
+- `GET /v1/admin/config/{key}`
+- `PUT /v1/admin/config/{key}` (query param: `value`)
+
+Admin-only runtime settings endpoints.
+
 ### Users
 
-- `GET /users`
-- `POST /users`
-- `GET /users/{user_id}`
-- `PUT /users/{user_id}`
-- `PUT /users/{user_id}/projects`
-- `DELETE /users/{user_id}`
+- `GET /v1/users`
+- `POST /v1/users`
+- `GET /v1/users/{user_id}`
+- `PUT /v1/users/{user_id}`
+- `PUT /v1/users/{user_id}/v1/projects`
+- `DELETE /v1/users/{user_id}`
 
 ### Projects
 
-- `GET /projects`
-- `GET /projects/{project_id}`
-- `POST /projects`
-- `PUT /projects/{project_id}`
-- `DELETE /projects/{project_id}`
+- `GET /v1/projects`
+- `GET /v1/projects/{project_id}`
+- `POST /v1/projects`
+- `PUT /v1/projects/{project_id}`
+- `DELETE /v1/projects/{project_id}`
 
 ### Prompts
 
-- `GET /prompts`
+- `GET /v1/prompts`
   - query params: `project`, `tag`, `limit`, `offset`
   - response header: `X-Total-Count`
   - each prompt includes `created_at`, `updated_at`, `created_by_username`, `updated_by_username`
-- `GET /prompts/search`
+- `GET /v1/prompts/search`
   - query params: repeated `tags`, `mode`, optional `project`
-- `POST /prompts`
-- `GET /prompts/{project}/{name}`
-- `PUT /prompts/{project}/{name}`
-- `DELETE /prompts/{project}/{name}`
-- `PUT /prompts/{project}/{name}/tags`
-- `GET /prompts/{project}/{name}/versions`
-- `GET /prompts/{project}/{name}/versions/{version}`
+- `POST /v1/prompts`
+- `GET /v1/prompts/{project}/{name}`
+- `PUT /v1/prompts/{project}/{name}`
+- `DELETE /v1/prompts/{project}/{name}`
+- `PUT /v1/prompts/{project}/{name}/tags`
+- `GET /v1/prompts/{project}/{name}/versions`
+- `GET /v1/prompts/{project}/{name}/versions/{version}`
 
 Each version response includes:
 
@@ -463,10 +507,10 @@ Each version response includes:
 
 ### Optimize
 
-- `POST /optimize`
-- `GET /optimize/config`
-- `PUT /optimize/config`
-- `GET /optimize/providers/{provider}/models`
+- `POST /v1/optimize`
+- `GET /v1/optimize/config`
+- `PUT /v1/optimize/config`
+- `GET /v1/optimize/providers/{provider}/models`
 
 ## Prompt Uniqueness Rules
 
@@ -506,6 +550,8 @@ For higher load, multi-instance deployments, or production environments, switch 
 SQLite is a single-file database accessed by one process at a time — horizontal scaling with SQLite is not possible.
 PostgreSQL is a network database that all instances connect to simultaneously.
 
+Important: if you use SQLite, run the app with a single worker (`--workers 1`) regardless of CPU count. SQLite is fine for local or single-process deployments, but multiple workers create separate in-memory caches and contend for the same database file.
+
 ### Switching From SQLite To PostgreSQL
 
 **1. Use the built-in PostgreSQL driver already included in the project dependencies:**
@@ -532,6 +578,7 @@ Notes:
 
 - The application runtime is synchronous for both SQLite and PostgreSQL.
 - Startup migrations run automatically on every boot.
+- Cache persistence and prewarm are handled during app lifespan startup/shutdown, so you do not need a separate cache service unless you choose Redis or another external cache.
 
 For Docker:
 
@@ -559,7 +606,7 @@ Switching back is also only an environment change.
 PowerShell:
 
 ```powershell
-$env:DATABASE_URL = "sqlite:///./prompts.db"
+$env:DATABASE_URL = "sqlite:///./v1/prompts.db"
 uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -567,7 +614,7 @@ Docker:
 
 ```powershell
 docker run --name prompt-man --restart unless-stopped -p 8000:8000 `
-  -e DATABASE_URL=sqlite:////data/prompts.db `
+  -e DATABASE_URL=sqlite:////data/v1/prompts.db `
   -e PROMPTMAN_KEY="your-long-stable-secret" `
   -v promptman-data:/data `
   verycomplexandlongname/prompt-man:latest
@@ -577,7 +624,7 @@ docker run --name prompt-man --restart unless-stopped -p 8000:8000 `
 
 | Database   | Example `DATABASE_URL`                                              |
 |------------|---------------------------------------------------------------------|
-| SQLite     | `sqlite:///./prompts.db`                                            |
+| SQLite     | `sqlite:///./v1/prompts.db`                                            |
 | PostgreSQL | `postgresql://user:password@host:5432/dbname`                       |
 | MySQL      | `mysql+pymysql://user:password@host:3306/dbname`                    |
 
@@ -588,7 +635,7 @@ docker run --name prompt-man --restart unless-stopped -p 8000:8000 `
 - If you inspect SQLite directly, expect `project_id` and `role_id` rather than string columns in normalized tables.
 
 ```text
-GET /prompts?limit=10&offset=20
+GET /v1/prompts?limit=10&offset=20
 ```
 
 - `limit` and `offset` are optional.
@@ -623,7 +670,7 @@ Switching between **SQLite sync** and **PostgreSQL sync** is just a `DATABASE_UR
 SQLite sync:
 
 ```powershell
-$env:DATABASE_URL = "sqlite:///./prompts.db"
+$env:DATABASE_URL = "sqlite:///./v1/prompts.db"
 uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -649,26 +696,25 @@ Current local SQLite sync snapshot (`15s`, `10/20/40` users, shared auth token, 
 
 | Scenario | Users | RPS | P95 (ms) | Avg (ms) | Failure % | Pass |
 | --- | ---: | ---: | ---: | ---: | ---: | :---: |
-| mixed | 10 | 34.28 | 140.00 | 27.07 | 0.00 | yes |
-| mixed | 20 | 43.01 | 860.00 | 151.87 | 0.00 | no |
-| mixed | 40 | 42.82 | 810.00 | 155.43 | 0.00 | no |
-| cache | 10 | 102.26 | 19.00 | 9.18 | 0.00 | yes |
-| cache | 20 | 189.02 | 30.00 | 13.68 | 0.00 | yes |
-| cache | 40 | 255.70 | 80.00 | 45.51 | 0.00 | yes |
-| optimize_hot | 10 | 19.50 | 19.00 | 9.41 | 0.00 | yes |
-| optimize_hot | 20 | 38.48 | 35.00 | 11.60 | 0.00 | yes |
-| optimize_hot | 40 | 72.01 | 39.00 | 13.85 | 0.00 | yes |
-| optimize_cold | 10 | 0.16 | 12000.00 | 9396.95 | 0.00 | no |
+| mixed | 10 | 34.06 | 57.00 | 45.84 | 0.00 | yes |
+| mixed | 20 | 62.84 | 130.00 | 32.91 | 0.00 | yes |
+| mixed | 40 | 54.65 | 840.00 | 315.55 | 0.00 | no |
+| cache | 10 | 102.62 | 21.00 | 9.64 | 0.00 | yes |
+| cache | 20 | 165.32 | 67.00 | 27.55 | 0.00 | yes |
+| cache | 40 | 140.46 | 260.00 | 148.98 | 0.00 | yes |
+| optimize_hot | 10 | 19.34 | 23.00 | 11.99 | 0.00 | yes |
+| optimize_hot | 20 | 38.28 | 23.00 | 12.26 | 0.00 | yes |
+| optimize_hot | 40 | 68.79 | 72.00 | 23.99 | 0.00 | yes |
+| optimize_cold | 10 | 0.18 | 11000.00 | 6985.02 | 0.00 | no |
 | optimize_cold | 20 | 0.00 | inf | inf | 100.00 | no |
 | optimize_cold | 40 | 0.00 | inf | inf | 100.00 | no |
 
 Observed takeaway:
 
-- **Zero failures** across all cache and hot-optimization scenarios at every concurrency level — the application handles concurrent access without errors or data corruption.
-- **Cache-heavy traffic scales strongly**: from `102.26 RPS` at `10` users to `255.70 RPS` at `40` users, all with zero failures. This is the dominant usage pattern for teams repeatedly reading shared prompts.
-- **Hot optimization sustains high throughput under concurrency**: `19.50 → 38.48 → 72.01 RPS` as users grow from `10` to `40`, all with zero failures and sub-`40 ms` p95 even at the highest measured concurrency.
-- Mixed CRUD/search traffic is dominated by LLM-bound optimize calls, so it misses the default p95 threshold on this local single-host setup. This reflects the LLM provider latency, not a concurrency issue in the application itself.
-- Cache reuse delivers approximately **110× throughput gain** and **297× p95 reduction** compared to cold optimization on the same host — making repeated prompt optimization viable under team load.
+- **Mixed traffic is healthy at 10 and 20 users** (`34.06 → 62.84 RPS`, `57 → 130 ms` p95) and only crosses the default p95 threshold at 40 users, where LLM-bound work pushes p95 to `840 ms`.
+- **Cache-heavy traffic scales strongly**: from `102.62 RPS` at `10` users to `140.46 RPS` at `40` users, all with zero failures. This remains the dominant usage pattern for teams repeatedly reading shared prompts.
+- **Hot optimization sustains high throughput under concurrency**: `19.34 → 38.28 → 68.79 RPS` as users grow from `10` to `40`, all with zero failures and sub-`75 ms` p95 even at the highest measured concurrency.
+- Cache reuse delivers approximately **105× throughput gain** and **478× p95 reduction** compared to cold optimization at `10` users on the same host — making repeated prompt optimization viable under team load.
 - At 20 and 40 users, cold optimization (no cache, real LLM call) did not complete requests inside the 15-second window — expected behavior given local LLM latency, not an application defect.
 
 ### DB Mode Comparison
@@ -803,7 +849,7 @@ Focused comparison for the cold optimize path at `10` users, where all measured 
 
 - Diagnostic one-off scripts are stored in `snippets/`.
 - Current files:
-  - `snippets/task_snippet.py` - runtime `/optimize/config` verification against running server.
+  - `snippets/task_snippet.py` - runtime `/v1/optimize/config` verification against running server.
   - `snippets/test_api.py` - local `TestClient` check for optimize config behavior.
   - `snippets/test_snippet.py` - direct helper-function check for non-string field normalization.
 

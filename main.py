@@ -9,13 +9,17 @@ from sqlalchemy.orm import Session
 
 import auth as auth_service
 import crud
-from app_core.lifecycle import create_lifespan, resolve_app_version, run_startup_bootstrap
+import app_settings
+from app_core.api_version import API_V1
+from app_core.lifecycle import chain_actions, create_app_lifespan, create_startup_action, resolve_app_version
 from app_core.logging_config import configure_logging
+from cache.persistence import create_cache_persist_action, create_cache_prewarm_action
 from database import (
     SQLALCHEMY_DATABASE_URL,
     SessionLocal,
     StartupSessionLocal,
     close_db_session,
+    get_db,
     init_database,
 )
 from middleware import ExceptionLoggingMiddleware, RequestLoggingMiddleware
@@ -105,17 +109,25 @@ __all__ = [
 ]
 
 
-def _run_startup_bootstrap() -> None:
-    run_startup_bootstrap(
+def _bootstrap(db) -> None:  # type: ignore[no-untyped-def]
+    """Combined startup bootstrap: admin seeding + loading global settings."""
+    auth_service.maybe_bootstrap_admin(db)
+    app_settings.load_from_db(db)
+
+
+startup_action = chain_actions(
+    create_startup_action(
         SQLALCHEMY_DATABASE_URL,
-        init_database,
-        StartupSessionLocal,
-        auth_service.maybe_bootstrap_admin,
+        lambda: init_database(),
+        lambda: StartupSessionLocal(),
+        _bootstrap,
         close_db_session,
-    )
+    ),
+    create_cache_prewarm_action(lambda: StartupSessionLocal()),
+)
+shutdown_action = create_cache_persist_action(lambda: StartupSessionLocal())
 
-
-lifespan = create_lifespan(_run_startup_bootstrap)
+lifespan = create_app_lifespan(startup_action, shutdown_action)
 
 
 app = FastAPI(title="PromptMan", version=APP_VERSION, lifespan=lifespan)
@@ -131,13 +143,6 @@ logger.info("logging.configured sinks=console+file")
 app.add_middleware(ExceptionLoggingMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
-
-def get_db() -> Iterator[Session]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        close_db_session(db)
 
 
 @app.get("/", include_in_schema=False)
@@ -155,37 +160,37 @@ def serve_app_icon_new() -> FileResponse:
     return FileResponse("P_240x240.png")
 
 
-@app.post("/auth/bootstrap-admin", response_model=AuthResponse)
+@app.post(f"{API_V1}/auth/bootstrap-admin", response_model=AuthResponse)
 def bootstrap_admin(data: UserBootstrap, db=Depends(get_db)) -> AuthResponse:  # type: ignore[no-untyped-def]
     return bootstrap_admin_route(data, db)
 
 
-@app.post("/auth/login", response_model=AuthResponse)
+@app.post(f"{API_V1}/auth/login", response_model=AuthResponse)
 def login(data: UserLogin, db=Depends(get_db)) -> AuthResponse:  # type: ignore[no-untyped-def]
     return login_route(data, db)
 
 
-@app.post("/auth/refresh", response_model=AuthResponse)
+@app.post(f"{API_V1}/auth/refresh", response_model=AuthResponse)
 def refresh_auth(data: RefreshTokenRequest, db=Depends(get_db)) -> AuthResponse:  # type: ignore[no-untyped-def]
     return refresh_auth_route(data, db)
 
 
-@app.get("/auth/status", response_model=AuthStatus)
+@app.get(f"{API_V1}/auth/status", response_model=AuthStatus)
 def get_auth_status(db=Depends(get_db)) -> AuthStatus:  # type: ignore[no-untyped-def]
     return get_auth_status_route(db)
 
 
-@app.get("/version")
+@app.get(f"{API_V1}/version")
 def get_app_version() -> dict[str, str]:
     return get_app_version_route(APP_VERSION)
 
 
-@app.get("/auth/me", response_model=UserOut)
+@app.get(f"{API_V1}/auth/me", response_model=UserOut)
 def get_me(current_user: User = Depends(auth_service.get_current_user)) -> UserOut:
     return get_me_route(current_user)
 
 
-@app.post("/auth/me/password", status_code=204)
+@app.post(f"{API_V1}/auth/me/password", status_code=204)
 def change_own_password(
     data: ChangePasswordRequest,
     db: Session = Depends(get_db),
@@ -194,67 +199,67 @@ def change_own_password(
     change_own_password_route(data, db, current_user)
 
 
-@app.get("/roles", response_model=list[RoleOut])
+@app.get(f"{API_V1}/roles", response_model=list[RoleOut])
 def list_roles(db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[RoleOut]:  # type: ignore[no-untyped-def]
     return list_roles_route(db)
 
 
-@app.get("/users", response_model=list[UserOut])
+@app.get(f"{API_V1}/users", response_model=list[UserOut])
 def list_users(db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[UserOut]:  # type: ignore[no-untyped-def]
     return list_users_route(db)
 
 
-@app.post("/users", response_model=UserOut)
+@app.post(f"{API_V1}/users", response_model=UserOut)
 def create_user(data: UserCreate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
     return create_user_route(data, db)
 
 
-@app.get("/users/{user_id}", response_model=UserOut)
+@app.get(f"{API_V1}/users/{{user_id}}", response_model=UserOut)
 def get_user(user_id: int, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
     return get_user_route(user_id, db)
 
 
-@app.put("/users/{user_id}", response_model=UserOut)
+@app.put(f"{API_V1}/users/{{user_id}}", response_model=UserOut)
 def update_user(user_id: int, data: UserUpdate, db=Depends(get_db), current_admin: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
     return update_user_route(user_id, data, db, current_admin)
 
 
-@app.put("/users/{user_id}/projects", response_model=UserOut)
+@app.put(f"{API_V1}/users/{{user_id}}/projects", response_model=UserOut)
 def update_user_projects(user_id: int, data: ProjectAccessUpdate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> UserOut:  # type: ignore[no-untyped-def]
     return update_user_projects_route(user_id, data, db)
 
 
-@app.delete("/users/{user_id}", status_code=204)
+@app.delete(f"{API_V1}/users/{{user_id}}", status_code=204)
 def delete_user(user_id: int, db=Depends(get_db), current_admin: User = Depends(auth_service.require_admin)) -> Response:  # type: ignore[no-untyped-def]
     return delete_user_route(user_id, db, current_admin)
 
 
-@app.get("/projects", response_model=list[ProjectOut])
+@app.get(f"{API_V1}/projects", response_model=list[ProjectOut])
 def list_projects(db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> list[ProjectOut]:  # type: ignore[no-untyped-def]
     return list_projects_route(db)
 
 
-@app.get("/projects/{project_id}", response_model=ProjectOut)
+@app.get(f"{API_V1}/projects/{{project_id}}", response_model=ProjectOut)
 def get_project(project_id: int, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:  # type: ignore[no-untyped-def]
     return get_project_route(project_id, db)
 
 
-@app.post("/projects", response_model=ProjectOut)
+@app.post(f"{API_V1}/projects", response_model=ProjectOut)
 def create_project(data: ProjectCreate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:  # type: ignore[no-untyped-def]
     return create_project_route(data, db)
 
 
-@app.put("/projects/{project_id}", response_model=ProjectOut)
+@app.put(f"{API_V1}/projects/{{project_id}}", response_model=ProjectOut)
 def update_project(project_id: int, data: ProjectUpdate, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> ProjectOut:  # type: ignore[no-untyped-def]
     return update_project_route(project_id, data, db)
 
 
-@app.delete("/projects/{project_id}", status_code=204)
+@app.delete(f"{API_V1}/projects/{{project_id}}", status_code=204)
 def delete_project(project_id: int, db=Depends(get_db), _: User = Depends(auth_service.require_admin)) -> Response:  # type: ignore[no-untyped-def]
     return delete_project_route(project_id, db)
 
 
-@app.get("/prompts/search", response_model=list[PromptOut])
+@app.get(f"{API_V1}/prompts/search", response_model=list[PromptOut])
 def search_prompts(
     tags: list[str] = Query(..., description="Tags to filter by (repeat for multiple)"),
     mode: Literal["and", "or"] = Query("or", description="'and' requires all tags; 'or' requires any tag"),
@@ -265,7 +270,7 @@ def search_prompts(
     return search_prompts_route(tags, mode, project, db, current_user)
 
 
-@app.get("/prompts", response_model=list[PromptOut])
+@app.get(f"{API_V1}/prompts", response_model=list[PromptOut])
 def list_prompts(
     response: Response,
     project: str | None = None,
@@ -278,87 +283,87 @@ def list_prompts(
     return list_prompts_route(response, project, tag, limit, offset, db, current_user)
 
 
-@app.post("/prompts", response_model=PromptOut)
+@app.post(f"{API_V1}/prompts", response_model=PromptOut)
 def create_prompt(data: PromptCreate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOut:  # type: ignore[no-untyped-def]
     return create_prompt_route(data, db, current_user)
 
 
-@app.get("/prompts/{project}/{name}", response_model=PromptOut)
+@app.get(f"{API_V1}/prompts/{{project}}/{{name}}", response_model=PromptOut)
 def get_prompt(project: str, name: str, db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptOut:  # type: ignore[no-untyped-def]
     return get_prompt_route(project, name, db, current_user)
 
 
-@app.delete("/prompts/{project}/{name}", status_code=204)
+@app.delete(f"{API_V1}/prompts/{{project}}/{{name}}", status_code=204)
 def delete_prompt(project: str, name: str, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> Response:  # type: ignore[no-untyped-def]
     return delete_prompt_route(project, name, db, current_user)
 
 
-@app.put("/prompts/{project}/{name}", response_model=PromptVersionOut)
+@app.put(f"{API_V1}/prompts/{{project}}/{{name}}", response_model=PromptVersionOut)
 def update_prompt(project: str, name: str, data: PromptUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptVersionOut:  # type: ignore[no-untyped-def]
     return update_prompt_route(project, name, data, db, current_user)
 
 
-@app.put("/prompts/{project}/{name}/tags", response_model=PromptOut)
+@app.put(f"{API_V1}/prompts/{{project}}/{{name}}/tags", response_model=PromptOut)
 def update_prompt_tags(project: str, name: str, data: PromptTagsUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOut:  # type: ignore[no-untyped-def]
     return update_prompt_tags_route(project, name, data, db, current_user)
 
 
-@app.get("/prompts/{project}/{name}/versions", response_model=list[PromptVersionOut])
+@app.get(f"{API_V1}/prompts/{{project}}/{{name}}/versions", response_model=list[PromptVersionOut])
 def list_versions(project: str, name: str, db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> list[PromptVersionOut]:  # type: ignore[no-untyped-def]
     return list_versions_route(project, name, db, current_user)
 
 
-@app.get("/prompts/{project}/{name}/versions/{version}", response_model=PromptVersionOut)
+@app.get(f"{API_V1}/prompts/{{project}}/{{name}}/versions/{{version}}", response_model=PromptVersionOut)
 def get_prompt_version(project: str, name: str, version: int, db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> PromptVersionOut:  # type: ignore[no-untyped-def]
     return get_prompt_version_route(project, name, version, db, current_user)
 
 
-@app.post("/optimize", response_model=PromptOptimizeResponse)
+@app.post(f"{API_V1}/optimize", response_model=PromptOptimizeResponse)
 def optimize_prompt(data: PromptData, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOptimizeResponse:  # type: ignore[no-untyped-def]
     return optimize_prompt_route(data, db, current_user, optimize_prompt_with_active_backend)
 
 
-@app.post("/optimize/jobs", response_model=PromptOptimizeJobOut)
+@app.post(f"{API_V1}/optimize/jobs", response_model=PromptOptimizeJobOut)
 def create_optimize_job(data: PromptData, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> PromptOptimizeJobOut:  # type: ignore[no-untyped-def]
     return create_optimize_job_route(data, db, current_user, create_optimization_job)
 
 
-@app.get("/optimize/jobs/{job_id}", response_model=PromptOptimizeJobOut)
+@app.get(f"{API_V1}/optimize/jobs/{{job_id}}", response_model=PromptOptimizeJobOut)
 def get_optimize_job(job_id: str, current_user: User = Depends(auth_service.get_current_user)) -> PromptOptimizeJobOut:
     return get_optimize_job_route(job_id, current_user, get_optimization_job)
 
 
-@app.delete("/optimize/jobs/{job_id}", response_model=PromptOptimizeJobOut)
+@app.delete(f"{API_V1}/optimize/jobs/{{job_id}}", response_model=PromptOptimizeJobOut)
 def cancel_optimize_job(job_id: str, current_user: User = Depends(auth_service.get_current_user)) -> PromptOptimizeJobOut:
     return cancel_optimize_job_route(job_id, current_user, cancel_optimization_job)
 
 
-@app.get("/optimize/config", response_model=OptimizeConfigOut)
+@app.get(f"{API_V1}/optimize/config", response_model=OptimizeConfigOut)
 def get_optimize_config(db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
     return get_optimize_config_route(db, current_user)
 
 
-@app.get("/llm/config", response_model=OptimizeConfigOut)
+@app.get(f"{API_V1}/llm/config", response_model=OptimizeConfigOut)
 def get_llm_config(db=Depends(get_db), current_user: User = Depends(auth_service.get_current_user)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
     return get_optimize_config_route(db, current_user)
 
 
-@app.put("/optimize/config", response_model=OptimizeConfigOut)
+@app.put(f"{API_V1}/optimize/config", response_model=OptimizeConfigOut)
 def update_optimize_config(data: OptimizeConfigUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
     return update_optimize_config_route(data, db, current_user)
 
 
-@app.put("/llm/config", response_model=OptimizeConfigOut)
+@app.put(f"{API_V1}/llm/config", response_model=OptimizeConfigOut)
 def update_llm_config(data: OptimizeConfigUpdate, db=Depends(get_db), current_user: User = Depends(auth_service.require_write_access)) -> OptimizeConfigOut:  # type: ignore[no-untyped-def]
     return update_optimize_config_route(data, db, current_user)
 
 
-@app.get("/llm/providers", response_model=list[LlmProviderOut])
+@app.get(f"{API_V1}/llm/providers", response_model=list[LlmProviderOut])
 def list_llm_providers(current_user: User = Depends(auth_service.get_current_user)) -> list[LlmProviderOut]:
     return list_llm_providers_route(get_llm_provider_catalog)
 
 
-@app.get("/llm/providers/{provider}/models", response_model=list[str])
+@app.get(f"{API_V1}/llm/providers/{{provider}}/models", response_model=list[str])
 def list_llm_provider_models(
     provider: str,
     base_url: str | None = Query(None, description="Optional provider base URL override"),
@@ -370,7 +375,7 @@ def list_llm_provider_models(
     return list_llm_provider_models_route(provider, base_url, api_token, timeout_seconds, db, current_user, list_available_models)
 
 
-@app.get("/optimize/providers/{provider}/models", response_model=list[str])
+@app.get(f"{API_V1}/optimize/providers/{{provider}}/models", response_model=list[str])
 def get_provider_models(
     provider: str,
     base_url: str | None = Query(None, description="Optional provider base URL override"),
@@ -380,3 +385,7 @@ def get_provider_models(
     current_user: User = Depends(auth_service.get_current_user),
 ) -> list[str]:
     return get_provider_models_route(provider, base_url, api_token, timeout_seconds, db, current_user, list_available_models)
+
+from routes.admin_config import router as admin_config_router
+
+app.include_router(admin_config_router)

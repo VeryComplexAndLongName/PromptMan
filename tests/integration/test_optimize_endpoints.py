@@ -1,4 +1,4 @@
-"""Tests for POST /optimize endpoint.
+"""Tests for POST /v1/optimize endpoint.
 
 The optimizer service is mocked so tests run without external provider keys.
 """
@@ -11,7 +11,7 @@ from main import app
 
 
 def login_as(client, username: str, password: str) -> str:  # type: ignore[no-untyped-def]
-    response = client.post("/auth/login", json={"username": username, "password": password})
+    response = client.post("/v1/auth/login", json={"username": username, "password": password})
     assert response.status_code == 200
     return response.json()["access_token"]
 
@@ -45,18 +45,18 @@ def _make_result(engine: str = "leo-openai:gpt-4o-mini") -> MagicMock:
 
 
 def test_leo_missing_task_returns_422(client):  # type: ignore[no-untyped-def]
-    response = client.post("/optimize", json={"role": "assistant"})
+    response = client.post("/v1/optimize", json={"role": "assistant"})
     assert response.status_code == 422
 
 
 def test_leo_empty_body_returns_422(client):  # type: ignore[no-untyped-def]
-    response = client.post("/optimize", json={})
+    response = client.post("/v1/optimize", json={})
     assert response.status_code == 422
 
 
 def test_leo_minimal_payload_returns_200(client):  # type: ignore[no-untyped-def]
     with patch("main.optimize_prompt_with_active_backend", return_value=_make_result()):
-        response = client.post("/optimize", json=MINIMAL_PAYLOAD)
+        response = client.post("/v1/optimize", json=MINIMAL_PAYLOAD)
     assert response.status_code == 200
     body = response.json()
     assert body["engine"].startswith("leo-")
@@ -67,7 +67,7 @@ def test_leo_minimal_payload_returns_200(client):  # type: ignore[no-untyped-def
 
 def test_leo_full_payload_returns_correct_shape(client):  # type: ignore[no-untyped-def]
     with patch("main.optimize_prompt_with_active_backend", return_value=_make_result()) as mock_svc:
-        response = client.post("/optimize", json=VALID_PAYLOAD)
+        response = client.post("/v1/optimize", json=VALID_PAYLOAD)
     assert response.status_code == 200
     body = response.json()
     assert body["optimized"]["task"] == "Optimized task"
@@ -78,7 +78,7 @@ def test_leo_full_payload_returns_correct_shape(client):  # type: ignore[no-unty
 
 def test_leo_service_receives_correct_fields(client):  # type: ignore[no-untyped-def]
     with patch("main.optimize_prompt_with_active_backend", return_value=_make_result()) as mock_svc:
-        client.post("/optimize", json=VALID_PAYLOAD)
+        client.post("/v1/optimize", json=VALID_PAYLOAD)
     called_with = mock_svc.call_args[0][0]
     assert called_with["task"] == VALID_PAYLOAD["task"]
     assert called_with["role"] == VALID_PAYLOAD["role"]
@@ -89,23 +89,23 @@ def test_leo_optimized_fields_none_falls_back_to_empty(client):  # type: ignore[
     result = _make_result()
     result.optimized_fields = None  # type: ignore[assignment]
     with patch("main.optimize_prompt_with_active_backend", return_value=result):
-        response = client.post("/optimize", json=VALID_PAYLOAD)
+        response = client.post("/v1/optimize", json=VALID_PAYLOAD)
     assert response.status_code == 200
     assert response.json()["optimized"]["task"] == ""
 
 
 def test_leo_service_error_returns_500(client):  # type: ignore[no-untyped-def]
     with TestClient(app, raise_server_exceptions=False) as no_raise_client:
-        login_response = no_raise_client.post("/auth/login", json={"username": "admin", "password": "admin"})
+        login_response = no_raise_client.post("/v1/auth/login", json={"username": "admin", "password": "admin"})
         no_raise_client.headers.update({"Authorization": f"Bearer {login_response.json()['access_token']}"})
         with patch("main.optimize_prompt_with_active_backend", side_effect=RuntimeError("Provider failed")):
-            response = no_raise_client.post("/optimize", json=VALID_PAYLOAD)
+            response = no_raise_client.post("/v1/optimize", json=VALID_PAYLOAD)
     assert response.status_code == 500
 
 
 def test_leo_endpoint_uses_personal_config_per_user(client):  # type: ignore[no-untyped-def]
     create_user_response = client.post(
-        "/users",
+        "/v1/users",
         json={
             "username": "leo-dev",
             "password": "dev-pass",
@@ -121,7 +121,7 @@ def test_leo_endpoint_uses_personal_config_per_user(client):  # type: ignore[no-
     developer_client.headers.update({"Authorization": f"Bearer {developer_token}"})
 
     developer_update = developer_client.put(
-        "/optimize/config",
+        "/v1/optimize/config",
         json={
             "llm_provider": "openai",
             "llm_model": "gpt-4o-mini",
@@ -131,7 +131,7 @@ def test_leo_endpoint_uses_personal_config_per_user(client):  # type: ignore[no-
     assert developer_update.status_code == 200
 
     with patch("main.optimize_prompt_with_active_backend", return_value=_make_result()) as mock_svc:
-        response = developer_client.post("/optimize", json=MINIMAL_PAYLOAD)
+        response = developer_client.post("/v1/optimize", json=MINIMAL_PAYLOAD)
 
     assert response.status_code == 200
     config_override = mock_svc.call_args[0][1]
