@@ -29,6 +29,7 @@ The project is aimed at small and medium teams that need concurrent multi-user a
 - Designed for small and medium teams with concurrent access needs and RBAC.
 - Concurrent behavior validated by a Locust-based load test harness with benchmarked results and generated charts.
 - Zero failures under concurrent read/cache workloads; throughput scales linearly with cache-hit traffic.
+- Can be deployed in cloud environments for shared, always-on access as a cloud solution.
 
 - Prompt storage by `project` + `name` with immutable version history.
 - Structured prompt fields: `role`, `task`, `context`, `constraints`, `output_format`, `examples`.
@@ -128,6 +129,14 @@ On startup the app applies Alembic migrations automatically before serving reque
 
 - UI: http://127.0.0.1:8000
 - API docs: http://127.0.0.1:8000/docs
+
+## Cloud Deployment (Optional)
+
+PromptMan can be deployed not only locally, but also in cloud infrastructure to provide shared team access as a cloud solution.
+
+- Typical cloud setup: containerized app + managed PostgreSQL + stable `PROMPTMAN_KEY` + HTTPS reverse proxy/load balancer.
+- This allows remote access for distributed teams and centralized API/UI usage.
+- Any environment that can run Docker or Python web services is suitable (for example VM-based hosting, container platforms, or Kubernetes).
 
 ## First Run And Authentication
 
