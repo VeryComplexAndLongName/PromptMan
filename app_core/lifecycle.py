@@ -108,9 +108,20 @@ def create_app_lifespan(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         startup_action()
+        plugin_engine = getattr(app.state, "plugin_engine", None)
+        if plugin_engine is not None:
+            try:
+                await plugin_engine.startup()
+            except Exception as exc:
+                logger.exception("plugins.startup.error error={}", exc)
         try:
             yield
         finally:
+            if plugin_engine is not None:
+                try:
+                    await plugin_engine.shutdown()
+                except Exception as exc:
+                    logger.exception("plugins.shutdown.error error={}", exc)
             run_shutdown_bootstrap(shutdown_action)
 
     return lifespan

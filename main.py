@@ -1,9 +1,11 @@
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -27,6 +29,7 @@ from models import User
 from optimizer.jobs import cancel_optimization_job, create_optimization_job, get_optimization_job
 from optimizer.service import list_available_models, optimize_prompt_with_active_backend
 from optimizer.service import get_llm_provider_catalog
+from plugin_engine import PluginEngine, router as plugin_router
 from routes import (
     bootstrap_admin_route,
     cancel_optimize_job_route,
@@ -132,6 +135,7 @@ lifespan = create_app_lifespan(startup_action, shutdown_action)
 
 app = FastAPI(title="PromptMan", version=APP_VERSION, lifespan=lifespan)
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
+app.state.plugin_engine = PluginEngine(app, plugins_dir=Path("plugins"), app_version=APP_VERSION)
 
 
 configure_logging()
@@ -140,6 +144,20 @@ logger.info("logging.configured sinks=console+file")
 # Order matters: request logging stays outermost so every request is traced,
 # while exception middleware centralizes uncaught exceptions and returns a
 # consistent 500 response.
+class PluginHookMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):  # type: ignore[no-untyped-def]
+        plugin_engine = getattr(request.app.state, "plugin_engine", None)
+        if plugin_engine is None:
+            return await call_next(request)
+        if request.url.path.startswith(f"{API_V1}/plugins/") or request.url.path == f"{API_V1}/plugins":
+            return await call_next(request)
+        await plugin_engine.run_before_hooks(request)
+        response = await call_next(request)
+        await plugin_engine.run_after_hooks(request, response)
+        return response
+
+
+app.add_middleware(PluginHookMiddleware)
 app.add_middleware(ExceptionLoggingMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
@@ -391,3 +409,4 @@ def get_provider_models(
 from routes.admin_config import router as admin_config_router
 
 app.include_router(admin_config_router)
+app.include_router(plugin_router)

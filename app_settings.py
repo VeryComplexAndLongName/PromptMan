@@ -37,6 +37,8 @@ _DEFAULTS: dict[str, str] = {
     "PROMPTMAN_CACHE_MAX_ENTRIES": "512",
     "PROMPTMAN_CACHE_PERSISTENCE_ENABLED": "true",
     "PROMPTMAN_CACHE_PERSISTENCE_LIMIT": "100",
+    # plugins
+    "PROMPTMAN_PLUGINS_SIGNED_ONLY": "false",
     # optimizer
     "OPTIMIZER_PROVIDER": "openai",
     "OPTIMIZER_MODEL": "gpt-4o-mini",

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 import app_settings
@@ -32,9 +32,10 @@ def read_global_config(
 
 
 @router.put("/{key}", summary="Update a global config value")
-def update_global_config(
+async def update_global_config(
     key: str,
     value: str,
+    request: Request,
     db: Session = Depends(get_db),
     _: User = Depends(auth_service.require_admin),
 ) -> dict[str, str]:
@@ -43,4 +44,8 @@ def update_global_config(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     set_global_config(db, key, value)
+    if key == "PROMPTMAN_PLUGINS_SIGNED_ONLY":
+        plugin_engine = getattr(request.app.state, "plugin_engine", None)
+        if plugin_engine is not None:
+            await plugin_engine.rescan(auto_activate=True)
     return {"key": key, "value": value}
