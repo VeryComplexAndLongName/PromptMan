@@ -294,7 +294,8 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
                     prompt_draft=_build_full_prompt(sanitized),
                     top_instruction=(
                         "Optimize this prompt for clarity and reliability. "
-                        "Prefer preserving structure with fields Role/Task/Context/Constraints/Output format/Examples."
+                        "Prefer preserving structure with fields Role/Task/Constraints/Output format/Examples/Context, "
+                        "with Context last."
                     ),
                     model=model_name,
                 ),
@@ -340,7 +341,8 @@ class LeoPromptOptimizerBackend(PromptOptimizerBackend):
                                 prompt_draft=_build_full_prompt(sanitized),
                                 top_instruction=(
                                     "Optimize this prompt for clarity and reliability. "
-                                    "Prefer preserving structure with fields Role/Task/Context/Constraints/Output format/Examples."
+                                    "Prefer preserving structure with fields Role/Task/Constraints/Output format/Examples/Context, "
+                                    "with Context last."
                                 ),
                                 model=low_memory_model,
                             ),

@@ -27,14 +27,14 @@ def _build_full_prompt(fields: dict[str, str | None]) -> str:
     if fields.get("role"):
         parts.append(f"Role: {fields['role']}")
     parts.append(f"Task: {fields['task']}")
-    if fields.get("context"):
-        parts.append(f"Context: {fields['context']}")
     if fields.get("constraints"):
         parts.append(f"Constraints: {fields['constraints']}")
     if fields.get("output_format"):
         parts.append(f"Output format: {fields['output_format']}")
     if fields.get("examples"):
         parts.append(f"Examples: {fields['examples']}")
+    if fields.get("context"):
+        parts.append(f"Context: {fields['context']}")
     return "\n\n".join(parts)
 
 
