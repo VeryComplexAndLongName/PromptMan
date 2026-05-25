@@ -9,6 +9,9 @@ const AUTH_TOKEN_STORAGE_KEY = "promptman.access_token";
 const REFRESH_TOKEN_STORAGE_KEY = "promptman.refresh_token";
 const ACCESS_TOKEN_EXPIRES_AT_STORAGE_KEY = "promptman.access_token_expires_at";
 const NEXT_REFRESH_AT_STORAGE_KEY = "promptman.next_refresh_at";
+const PLUGIN_TAG_MATCH_MODE_STORAGE_KEY = "promptman.plugin_tag_match_mode";
+const PLUGIN_ROUTES_OPEN_STORAGE_KEY = "promptman.plugin_routes_open";
+const PLUGIN_FILTER_BAR_OPEN_STORAGE_KEY = "promptman.plugin_filter_bar_open";
 const emptyPromptData = () => ({
   role: "",
   task: "",
@@ -75,12 +78,25 @@ const buildPromptMarkdown = (fields) => {
   const parts = [];
   if (fields.role?.trim())           parts.push(`**Role:** ${fields.role}`);
   if (fields.task?.trim())           parts.push(`**Task:** ${fields.task}`);
-  if (fields.context?.trim())        parts.push(`**Context:** ${fields.context}`);
   if (fields.constraints?.trim())    parts.push(`**Constraints:** ${fields.constraints}`);
   if (fields.output_format?.trim())  parts.push(`**Output format:** ${fields.output_format}`);
   if (fields.examples?.trim())       parts.push(`**Examples:** ${fields.examples}`);
+  if (fields.context?.trim())        parts.push(`**Context:** ${fields.context}`);
   return parts.join("\n\n");
 };
+
+const readJsonStorage = (storageKey, fallback) => {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+  } catch (_err) {
+    return fallback;
+  }
+};
+
+const normalizePluginTagMatchMode = (value) => (String(value || "").toLowerCase() === "and" ? "and" : "or");
 
 createApp({
   setup() {
@@ -183,6 +199,28 @@ createApp({
     const globalConfigLoading = ref(false);
     const globalConfigStatus = ref("");
 
+    /* plugins */
+    const plugins = ref([]);
+    const pluginsLoading = ref(false);
+    const pluginsStatus = ref("");
+    const pluginControlValues = ref({});
+    const pluginResponses = ref({});
+    const pluginDiagnostics = ref({});
+    const pluginDiagnosticsLoading = ref({});
+    const pluginDiagnosticsOpen = ref({});
+    const pluginModalOpen = ref(false);
+    const pluginModalLoading = ref(false);
+    const pluginModalError = ref("");
+    const pluginModalStatus = ref("");
+    const pluginModalSession = ref(null);
+    const pluginModalPluginName = ref("");
+    const pluginModalEndpointName = ref("");
+    const pluginNameFilter = ref("");
+    const pluginTagFilters = ref([]);
+    const pluginTagMatchMode = ref(normalizePluginTagMatchMode(window.localStorage.getItem(PLUGIN_TAG_MATCH_MODE_STORAGE_KEY)));
+    const pluginRoutesOpen = ref(readJsonStorage(PLUGIN_ROUTES_OPEN_STORAGE_KEY, {}));
+    const pluginFilterBarOpen = ref(window.localStorage.getItem(PLUGIN_FILTER_BAR_OPEN_STORAGE_KEY) === "true");
+
     /* change password */
     const changePasswordForm = ref({ current_password: "", new_password: "", confirm_password: "" });
     const changePasswordStatus = ref("");
@@ -214,6 +252,124 @@ createApp({
       if (["admin", "viewer"].includes(currentUser.value.role)) return "All projects";
       return (currentUser.value.projects || []).length ? currentUser.value.projects.join(", ") : "No assigned projects";
     });
+
+    const getPluginTags = (plugin) => {
+      const tags = [];
+      const state = String(plugin?.state || "").trim().toLowerCase();
+      if (state) tags.push(state);
+      if (plugin?.available) tags.push("available");
+      if (!plugin?.compatible) tags.push("incompatible");
+      if (plugin?.signature_status) tags.push(String(plugin.signature_status).toLowerCase());
+      if ((plugin?.health_failures || 0) > 0) tags.push("health-failed");
+      if (plugin?.runtime_failures && Object.keys(plugin.runtime_failures).length) tags.push("runtime-failed");
+      if ((plugin?.active_routes || []).length) tags.push("running");
+      if ((plugin?.ui_controls || []).length) tags.push("ui");
+      if ((plugin?.hooks || []).length) tags.push("hooks");
+      if ((plugin?.endpoints || []).some((endpoint) => !!endpoint.launches_modal)) tags.push("modal");
+      return [...new Set(tags)];
+    };
+
+    const availablePluginTags = computed(() => {
+      const tags = new Set();
+      plugins.value.forEach((plugin) => {
+        getPluginTags(plugin).forEach((tag) => tags.add(tag));
+      });
+      return Array.from(tags).sort((left, right) => left.localeCompare(right));
+    });
+
+    const pluginTagFilterGroups = computed(() => {
+      const available = availablePluginTags.value;
+      const assigned = new Set();
+      const groupDefinitions = [
+        { key: "status", label: "Status", tags: ["running", "available", "incompatible", "health-failed", "runtime-failed"] },
+        { key: "signature", label: "Signature", tags: ["verified", "unsigned", "invalid"] },
+        { key: "capabilities", label: "Capabilities", tags: ["ui", "hooks", "modal"] },
+      ];
+
+      const groups = groupDefinitions.map((group) => {
+        const tags = group.tags.filter((tag) => available.includes(tag));
+        tags.forEach((tag) => assigned.add(tag));
+        return { ...group, tags };
+      }).filter((group) => group.tags.length);
+
+      const otherTags = available.filter((tag) => !assigned.has(tag));
+      if (otherTags.length) {
+        groups.push({ key: "other", label: "Other", tags: otherTags });
+      }
+      return groups;
+    });
+
+    const filteredPlugins = computed(() => {
+      const nameNeedle = String(pluginNameFilter.value || "").trim().toLowerCase();
+      const selectedTags = new Set((pluginTagFilters.value || []).map((tag) => String(tag || "").trim().toLowerCase()).filter(Boolean));
+      return plugins.value.filter((plugin) => {
+        const nameMatches = !nameNeedle || String(plugin?.name || "").toLowerCase().includes(nameNeedle);
+        if (!nameMatches) return false;
+        if (!selectedTags.size) return true;
+        const pluginTags = new Set(getPluginTags(plugin));
+        if (pluginTagMatchMode.value === "and") {
+          for (const tag of selectedTags) {
+            if (!pluginTags.has(tag)) {
+              return false;
+            }
+          }
+          return true;
+        }
+        for (const tag of selectedTags) {
+          if (pluginTags.has(tag)) {
+            return true;
+          }
+        }
+        return false;
+      });
+    });
+
+    const togglePluginTagFilter = (tag) => {
+      const normalized = String(tag || "").trim().toLowerCase();
+      if (!normalized) return;
+      const next = new Set(pluginTagFilters.value);
+      if (next.has(normalized)) {
+        next.delete(normalized);
+      } else {
+        next.add(normalized);
+      }
+      pluginTagFilters.value = [...next].sort((left, right) => left.localeCompare(right));
+    };
+
+    const clearPluginFilters = () => {
+      pluginNameFilter.value = "";
+      pluginTagFilters.value = [];
+    };
+
+    const togglePluginFilterBar = () => {
+      pluginFilterBarOpen.value = !pluginFilterBarOpen.value;
+      window.localStorage.setItem(PLUGIN_FILTER_BAR_OPEN_STORAGE_KEY, pluginFilterBarOpen.value ? "true" : "false");
+    };
+
+    const isPluginTagActive = (tag) => pluginTagFilters.value.includes(String(tag || "").trim().toLowerCase());
+
+    const setPluginTagMatchMode = (mode) => {
+      pluginTagMatchMode.value = normalizePluginTagMatchMode(mode);
+      window.localStorage.setItem(PLUGIN_TAG_MATCH_MODE_STORAGE_KEY, pluginTagMatchMode.value);
+    };
+
+    const isPluginRoutesOpen = (pluginName) => !!pluginRoutesOpen.value?.[pluginName];
+
+    const savePluginRoutesOpen = () => {
+      window.localStorage.setItem(PLUGIN_ROUTES_OPEN_STORAGE_KEY, JSON.stringify(pluginRoutesOpen.value));
+    };
+
+    const togglePluginRoutes = (pluginName) => {
+      if (!pluginName) return;
+      const next = { ...pluginRoutesOpen.value };
+      if (isPluginRoutesOpen(pluginName)) {
+        delete next[pluginName];
+      } else {
+        next[pluginName] = true;
+      }
+      pluginRoutesOpen.value = next;
+      savePluginRoutesOpen();
+    };
 
     const nowTime = () => new Date(Date.now()).toISOString().replace("T", " ").replace("Z", " UTC");
     let tokenRefreshPromise = null;
@@ -333,6 +489,10 @@ createApp({
       }
       users.value = [];
       projects.value = [];
+      plugins.value = [];
+      pluginControlValues.value = {};
+      pluginResponses.value = {};
+      pluginsStatus.value = "";
       optimizeConfig.value = defaultOptimizeConfig();
       globalConfigEntries.value = [];
       globalConfigStatus.value = "";
@@ -516,6 +676,7 @@ createApp({
     const globalConfigBooleanKeys = new Set([
       "PROMPTMAN_CACHE_ENABLED",
       "PROMPTMAN_CACHE_PERSISTENCE_ENABLED",
+      "PROMPTMAN_PLUGINS_SIGNED_ONLY",
     ]);
 
     const globalConfigIntegerKeys = new Set([
@@ -603,6 +764,9 @@ createApp({
         if (entry.key.startsWith("OPTIMIZER_") || entry.key === "OLLAMA_BASE_URL") {
           await loadOptimizeConfig();
         }
+        if (entry.key === "PROMPTMAN_PLUGINS_SIGNED_ONLY") {
+          await loadPlugins();
+        }
       } catch (_err) {
         const details = _err?.message || "network error";
         globalConfigStatus.value = `Failed to save ${entry.key} (${details})`;
@@ -611,11 +775,392 @@ createApp({
       }
     };
 
+    const pluginHasImageIcon = (icon) => typeof icon === "string" && /^(\/|https?:)/i.test(icon);
+
+    const pluginIconFallback = (plugin) => String(plugin?.name || "P").slice(0, 1).toUpperCase();
+
+    const getPluginEndpointConfig = (plugin, endpointName) => {
+      const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
+      const baseName = String(endpointName || "").replace(/_init$/, "");
+      return endpoints.find((item) => item.name === baseName) || null;
+    };
+
+    const getPluginInitValue = (plugin, control) => {
+      const initKey = control.init_endpoint_name || `${control.endpoint_name}_init`;
+      const initResult = plugin?.init_results?.[initKey];
+      if (initResult && Object.prototype.hasOwnProperty.call(initResult, "value")) {
+        return initResult.value;
+      }
+      return control.default_value ?? (control.control_type === "checkbox" ? false : "");
+    };
+
+    const ensurePluginControlBucket = (plugin) => {
+      if (!plugin || !plugin.name) return;
+      if (!pluginControlValues.value[plugin.name]) {
+        pluginControlValues.value[plugin.name] = {};
+      }
+      (plugin.ui_controls || []).forEach((control) => {
+        if (!(control.name in pluginControlValues.value[plugin.name])) {
+          pluginControlValues.value[plugin.name][control.name] = getPluginInitValue(plugin, control);
+        }
+      });
+    };
+
+    const loadPlugins = async () => {
+      if (!currentUser.value) {
+        plugins.value = [];
+        pluginControlValues.value = {};
+        pluginResponses.value = {};
+        pluginDiagnostics.value = {};
+        pluginDiagnosticsLoading.value = {};
+        pluginDiagnosticsOpen.value = {};
+        pluginRoutesOpen.value = {};
+        return;
+      }
+      pluginsLoading.value = true;
+      pluginsStatus.value = "";
+      const res = await apiFetch("/v1/plugins");
+      if (!res.ok) {
+        pluginsLoading.value = false;
+        pluginsStatus.value = `Failed to load plugins (${res.status})`;
+        return;
+      }
+      plugins.value = await res.json();
+      plugins.value.forEach((plugin) => ensurePluginControlBucket(plugin));
+      const names = new Set(plugins.value.map((plugin) => plugin.name));
+      pluginDiagnostics.value = Object.fromEntries(
+        Object.entries(pluginDiagnostics.value).filter(([name]) => names.has(name))
+      );
+      pluginDiagnosticsLoading.value = Object.fromEntries(
+        Object.entries(pluginDiagnosticsLoading.value).filter(([name]) => names.has(name))
+      );
+      pluginDiagnosticsOpen.value = Object.fromEntries(
+        Object.entries(pluginDiagnosticsOpen.value).filter(([name]) => names.has(name))
+      );
+      pluginRoutesOpen.value = Object.fromEntries(
+        Object.entries(pluginRoutesOpen.value).filter(([name, isOpen]) => names.has(name) && !!isOpen)
+      );
+      savePluginRoutesOpen();
+      if (isAdmin.value) {
+        await Promise.all(plugins.value.map((plugin) => loadPluginDiagnostics(plugin.name, false)));
+      }
+      if (pluginModalOpen.value && pluginModalPluginName.value) {
+        const modalPluginStillExists = plugins.value.some((plugin) => plugin.name === pluginModalPluginName.value);
+        if (!modalPluginStillExists) {
+          await closePluginModal(false);
+        }
+      }
+      pluginsLoading.value = false;
+    };
+
+    const getPluginDiagnostics = (pluginName) => pluginDiagnostics.value?.[pluginName] || null;
+
+    const isPluginDiagnosticsLoading = (pluginName) => !!pluginDiagnosticsLoading.value?.[pluginName];
+
+    const isPluginDiagnosticsOpen = (pluginName) => !!pluginDiagnosticsOpen.value?.[pluginName];
+
+    const loadPluginDiagnostics = async (pluginName, force = false) => {
+      if (!isAdmin.value || !pluginName) {
+        return;
+      }
+      if (!force && pluginDiagnostics.value?.[pluginName]) {
+        return;
+      }
+      if (pluginDiagnosticsLoading.value?.[pluginName]) {
+        return;
+      }
+      pluginDiagnosticsLoading.value[pluginName] = true;
+      const res = await apiFetch(`/v1/plugins/${encodeURIComponent(pluginName)}/_diagnostics`);
+      if (!res.ok) {
+        pluginDiagnostics.value[pluginName] = {
+          error: `Failed to load diagnostics (${res.status})`,
+        };
+        pluginDiagnosticsLoading.value[pluginName] = false;
+        return;
+      }
+      let payload = {};
+      try {
+        payload = await res.json();
+      } catch (_) {
+        payload = { error: "Diagnostics response is invalid" };
+      }
+      pluginDiagnostics.value[pluginName] = payload;
+      pluginDiagnosticsLoading.value[pluginName] = false;
+    };
+
+    const togglePluginDiagnostics = async (pluginName) => {
+      const nextState = !isPluginDiagnosticsOpen(pluginName);
+      pluginDiagnosticsOpen.value[pluginName] = nextState;
+      if (nextState) {
+        await loadPluginDiagnostics(pluginName, false);
+      }
+    };
+
+    const getPluginModalLaunchers = (plugin) => {
+      const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
+      return endpoints.filter((endpoint) => !!endpoint.launches_modal);
+    };
+
+    const pluginModalControls = computed(() => pluginModalSession.value?.modal?.controls || []);
+
+    const getPluginModalControlValue = (controlName) => {
+      return pluginModalSession.value?.control_values?.[controlName];
+    };
+
+    const setPluginModalControlValue = (controlName, value) => {
+      if (!pluginModalSession.value) return;
+      if (!pluginModalSession.value.control_values) {
+        pluginModalSession.value.control_values = {};
+      }
+      pluginModalSession.value.control_values[controlName] = value;
+    };
+
+    const openPluginModal = async (plugin, endpointName) => {
+      if (!plugin?.name || !endpointName) return;
+      pluginModalLoading.value = true;
+      pluginModalError.value = "";
+      pluginModalStatus.value = "Opening modal...";
+      try {
+        const res = await apiFetch(`/v1/plugins/${encodeURIComponent(plugin.name)}/modals`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint_name: endpointName, payload: {}, controls: {} }),
+        });
+        if (!res.ok) {
+          let detail = "";
+          try {
+            const body = await res.json();
+            detail = body?.detail || "";
+          } catch (_err) {
+            detail = "";
+          }
+          pluginModalError.value = `Failed to open modal (${res.status})${detail ? `: ${detail}` : ""}`;
+          return;
+        }
+        const session = await res.json();
+        pluginModalSession.value = session;
+        pluginModalPluginName.value = plugin.name;
+        pluginModalEndpointName.value = endpointName;
+        pluginModalOpen.value = true;
+        pluginModalStatus.value = session?.modal?.status || "Modal opened";
+      } catch (_err) {
+        pluginModalError.value = "Failed to open modal (network error)";
+      } finally {
+        pluginModalLoading.value = false;
+      }
+    };
+
+    const refreshPluginModal = async () => {
+      if (!pluginModalSession.value?.session_id || !pluginModalPluginName.value) return;
+      const res = await apiFetch(`/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}`);
+      if (!res.ok) {
+        pluginModalError.value = `Failed to refresh modal (${res.status})`;
+        return;
+      }
+      pluginModalSession.value = await res.json();
+    };
+
+    const invokePluginModalControl = async (control, overrideValue = undefined) => {
+      if (!pluginModalSession.value?.session_id || !pluginModalPluginName.value) return;
+      const value = overrideValue !== undefined ? overrideValue : getPluginModalControlValue(control.name);
+      const currentControls = { ...(pluginModalSession.value.control_values || {}) };
+      currentControls[control.name] = value;
+      setPluginModalControlValue(control.name, value);
+
+      const res = await apiFetch(
+        `/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}/controls/${encodeURIComponent(control.name)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ control_name: control.name, value, controls: currentControls }),
+        }
+      );
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const body = await res.json();
+          detail = body?.detail || "";
+        } catch (_err) {
+          detail = "";
+        }
+        pluginModalError.value = `Modal control failed (${res.status})${detail ? `: ${detail}` : ""}`;
+        return;
+      }
+      pluginModalSession.value = await res.json();
+      pluginModalStatus.value = pluginModalSession.value?.modal?.status || pluginModalStatus.value;
+    };
+
+    const stopPluginModal = async () => {
+      if (!pluginModalSession.value?.session_id || !pluginModalPluginName.value) return;
+      const res = await apiFetch(
+        `/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}/stop`,
+        { method: "POST" }
+      );
+      if (!res.ok) {
+        pluginModalError.value = `Failed to stop modal (${res.status})`;
+        return;
+      }
+      pluginModalSession.value = await res.json();
+      pluginModalStatus.value = pluginModalSession.value?.modal?.status || "Modal stopped";
+    };
+
+    const closePluginModal = async (removeRemote = true) => {
+      if (removeRemote && pluginModalSession.value?.session_id && pluginModalPluginName.value) {
+        const res = await apiFetch(
+          `/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok) {
+          pluginModalError.value = `Failed to close modal (${res.status})`;
+          return;
+        }
+      }
+      pluginModalOpen.value = false;
+      pluginModalLoading.value = false;
+      pluginModalError.value = "";
+      pluginModalStatus.value = "";
+      pluginModalSession.value = null;
+      pluginModalPluginName.value = "";
+      pluginModalEndpointName.value = "";
+    };
+
+    const getPluginDiagnosticsSummary = (pluginName) => {
+      const payload = getPluginDiagnostics(pluginName);
+      if (!payload || payload.error) {
+        return { blockedCount: 0, failureCount: 0 };
+      }
+      const endpointEntries = Array.isArray(payload.endpoint_diagnostics) ? payload.endpoint_diagnostics : [];
+      const hookEntries = Array.isArray(payload.hook_diagnostics) ? payload.hook_diagnostics : [];
+      const blockedCount = endpointEntries.filter((entry) => !!entry.blocked).length + hookEntries.filter((entry) => !!entry.blocked).length;
+      const failureCount = endpointEntries.reduce((acc, entry) => acc + Number(entry.consecutive_failures || 0), 0)
+        + hookEntries.reduce((acc, entry) => acc + Number(entry.consecutive_failures || 0), 0);
+      return { blockedCount, failureCount };
+    };
+
+    const getPluginBlockedCount = (pluginName) => getPluginDiagnosticsSummary(pluginName).blockedCount;
+
+    const getPluginFailureCount = (pluginName) => getPluginDiagnosticsSummary(pluginName).failureCount;
+
+    const getPluginControlValue = (pluginName, controlName) => {
+      return pluginControlValues.value?.[pluginName]?.[controlName];
+    };
+
+    const setPluginControlValue = (pluginName, controlName, value) => {
+      if (!pluginControlValues.value[pluginName]) {
+        pluginControlValues.value[pluginName] = {};
+      }
+      pluginControlValues.value[pluginName][controlName] = value;
+    };
+
+    const canUsePluginControl = (plugin, control) => {
+      const endpoint = getPluginEndpointConfig(plugin, control.endpoint_name);
+      if (!endpoint || !Array.isArray(endpoint.roles) || !endpoint.roles.length) {
+        return true;
+      }
+      return endpoint.roles.includes(currentUser.value?.role);
+    };
+
+    const setPluginResponse = (pluginName, type, message) => {
+      pluginResponses.value[pluginName] = { type, message };
+    };
+
+    const invokePluginControl = async (plugin, control, overrideValue = undefined) => {
+      const endpoint = getPluginEndpointConfig(plugin, control.endpoint_name);
+      if (!endpoint) {
+        setPluginResponse(plugin.name, "err", `Unknown endpoint ${control.endpoint_name}`);
+        return;
+      }
+      const currentBucket = { ...(pluginControlValues.value?.[plugin.name] || {}) };
+      const value = overrideValue !== undefined ? overrideValue : currentBucket[control.name];
+      currentBucket[control.name] = value;
+      setPluginControlValue(plugin.name, control.name, value);
+
+      const requestOptions = {
+        method: endpoint.method || "POST",
+      };
+      if (!["GET", "DELETE"].includes(String(endpoint.method || "POST").toUpperCase())) {
+        requestOptions.headers = { "Content-Type": "application/json" };
+        requestOptions.body = JSON.stringify({
+          value,
+          control_name: control.name,
+          controls: currentBucket,
+        });
+      }
+
+      const res = await apiFetch(`/v1/plugins/${encodeURIComponent(plugin.name)}/${encodeURIComponent(control.endpoint_name)}`, requestOptions);
+      if (!res.ok) {
+        let details = "";
+        try {
+          const payload = await res.json();
+          details = payload?.detail || "";
+        } catch (_) {
+          details = "";
+        }
+        setPluginResponse(plugin.name, "err", `Plugin call failed (${res.status})${details ? `: ${details}` : ""}`);
+        return;
+      }
+      let payload = {};
+      try {
+        payload = await res.json();
+      } catch (_) {
+        payload = {};
+      }
+      if (Object.prototype.hasOwnProperty.call(payload, "value")) {
+        setPluginControlValue(plugin.name, control.name, payload.value);
+      }
+      setPluginResponse(plugin.name, "ok", payload.message || "Plugin action completed");
+    };
+
+    const managePlugin = async (pluginName, action) => {
+      const routes = {
+        load: { url: `/v1/plugins/${encodeURIComponent(pluginName)}/_load`, method: "POST" },
+        reload: { url: `/v1/plugins/${encodeURIComponent(pluginName)}/_reload`, method: "POST" },
+        unload: { url: `/v1/plugins/${encodeURIComponent(pluginName)}`, method: "DELETE" },
+        health: { url: `/v1/plugins/${encodeURIComponent(pluginName)}/health`, method: "POST" },
+      };
+      const target = routes[action];
+      if (!target) return;
+      pluginsStatus.value = "";
+      const res = await apiFetch(target.url, { method: target.method });
+      if (!res.ok) {
+        pluginsStatus.value = `Failed to ${action} plugin ${pluginName} (${res.status})`;
+        return;
+      }
+      const payload = await res.json();
+      pluginsStatus.value = payload.message || `Plugin ${action} completed`;
+      await loadPlugins();
+      if (isPluginDiagnosticsOpen(pluginName)) {
+        await loadPluginDiagnostics(pluginName, true);
+      }
+      if (pluginModalOpen.value && pluginModalPluginName.value === pluginName && ["unload", "reload"].includes(action)) {
+        await closePluginModal(false);
+      }
+    };
+
+    const rescanPlugins = async () => {
+      pluginsStatus.value = "";
+      const res = await apiFetch("/v1/plugins/_rescan", { method: "POST" });
+      if (!res.ok) {
+        pluginsStatus.value = `Failed to rescan plugins (${res.status})`;
+        return;
+      }
+      const payload = await res.json();
+      pluginsStatus.value = payload.message || "Plugin rescan completed";
+      await loadPlugins();
+      if (isAdmin.value) {
+        const openNames = Object.entries(pluginDiagnosticsOpen.value)
+          .filter(([, isOpen]) => !!isOpen)
+          .map(([name]) => name);
+        await Promise.all(openNames.map((name) => loadPluginDiagnostics(name, true)));
+      }
+    };
+
     const initializeAuthenticatedApp = async () => {
       setDefaultActiveTab();
       await fetchPrompts();
       await loadLlmProviders();
       await loadOptimizeConfig();
+      await loadPlugins();
       await loadRoles();
       await loadProjects();
       await loadUsers();
@@ -1675,6 +2220,8 @@ createApp({
       globalConfigEntries, globalConfigLoading, globalConfigStatus,
       roleOptions, projects, projectsLoading, projectsStatus, newProjectForm, editingProjectId, editProjectForm,
       users, usersLoading, usersStatus, newUserForm, editingUserId, editUserForm, availableProjectNames,
+      plugins, pluginsLoading, pluginsStatus, pluginResponses,
+      pluginNameFilter, pluginTagFilters, pluginTagMatchMode, pluginFilterBarOpen, availablePluginTags, pluginTagFilterGroups, filteredPlugins,
       key, togglePrompt, saveNewVersion, saveTags, createPrompt,
       deletePrompt,
       optimizeFromCreate,
@@ -1684,6 +2231,14 @@ createApp({
       getGlobalConfigControlType, getGlobalConfigOptions, setGlobalConfigBooleanDraft,
       submitAuth, logout, createProjectRecord, beginEditProject, cancelProjectEdit, saveProjectEdit, deleteProjectRecord,
       createUserAccount, beginEditUser, cancelUserEdit, saveUserEdit, deleteUserAccount, loadUsers, loadProjects,
+      loadPlugins, rescanPlugins, managePlugin, invokePluginControl,
+      pluginHasImageIcon, pluginIconFallback, getPluginControlValue, canUsePluginControl,
+      getPluginDiagnostics, isPluginDiagnosticsLoading, isPluginDiagnosticsOpen, togglePluginDiagnostics,
+      getPluginBlockedCount, getPluginFailureCount,
+      getPluginTags, togglePluginTagFilter, clearPluginFilters, togglePluginFilterBar, isPluginTagActive, setPluginTagMatchMode,
+      isPluginRoutesOpen, togglePluginRoutes,
+      getPluginModalLaunchers, pluginModalOpen, pluginModalLoading, pluginModalError, pluginModalStatus, pluginModalSession,
+      pluginModalControls, getPluginModalControlValue, openPluginModal, invokePluginModalControl, stopPluginModal, closePluginModal, refreshPluginModal,
       toggleProjectSelection, isProjectSelected,
       visibleHeaderTags, hiddenHeaderTagCount,
       formatUtcDateTime, formatAuditLine, accessTokenCountdown, nextRefreshCountdown, nextRefreshAt, accessTokenExpiresAt,
@@ -1746,6 +2301,7 @@ createApp({
       <button class="tab-btn" :class="{active: activeTab==='browse'}" @click="activeTab='browse'">Browse</button>
       <button v-if="canWrite" class="tab-btn" :class="{active: activeTab==='create'}" @click="activeTab='create'">+ Create</button>
       <button class="tab-btn" :class="{active: activeTab==='config'}" @click="activeTab='config'">Config</button>
+      <button class="tab-btn" :class="{active: activeTab==='plugins'}" @click="activeTab='plugins'">Plugins</button>
       <button v-if="canViewAdmin" class="tab-btn" :class="{active: activeTab==='admin'}" @click="activeTab='admin'">Admin</button>
       <button class="tab-btn" :class="{active: activeTab==='account'}" @click="activeTab='account'">Account</button>
       <button class="tab-btn" :class="{active: activeTab==='about'}" @click="activeTab='about'">About</button>
@@ -1881,10 +2437,6 @@ createApp({
                     <textarea v-model="newVersionTask" style="min-height:160px" placeholder="Generate a summary of..."></textarea>
                   </div>
                   <div class="field">
-                    <label>Context (optional)</label>
-                    <textarea v-model="newVersionContext" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
-                  </div>
-                  <div class="field">
                     <label>Constraints (optional)</label>
                     <textarea v-model="newVersionConstraints" style="min-height:80px" placeholder="Limitations, rules, format restrictions..."></textarea>
                   </div>
@@ -1896,12 +2448,16 @@ createApp({
                     <label>Examples (optional)</label>
                     <textarea v-model="newVersionExamples" style="min-height:80px" placeholder="Input/output examples..."></textarea>
                   </div>
+                  <div class="field">
+                    <label>Context (optional)</label>
+                    <textarea v-model="newVersionContext" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
+                  </div>
                 </div>
                 <div class="new-version-group">
                   <p class="new-version-group-title">Composed preview</p>
                   <div class="field">
                     <div class="md-editor-preview-label">Preview</div>
-                    <div class="md-editor-preview" :class="{empty: !newVersionTask}" v-html="newVersionTask ? md(buildPromptMarkdown({role: newVersionRole, task: newVersionTask, context: newVersionContext, constraints: newVersionConstraints, output_format: newVersionOutputFormat, examples: newVersionExamples})) : 'Nothing to preview yet\u2026'"></div>
+                    <div class="md-editor-preview" :class="{empty: !newVersionTask}" v-html="newVersionTask ? md(buildPromptMarkdown({role: newVersionRole, task: newVersionTask, constraints: newVersionConstraints, output_format: newVersionOutputFormat, examples: newVersionExamples, context: newVersionContext})) : 'Nothing to preview yet\u2026'"></div>
                   </div>
                 </div>
               </div>
@@ -1974,10 +2530,6 @@ createApp({
             <textarea v-model="form.task" style="min-height:160px" placeholder="Generate a summary of..."></textarea>
           </div>
           <div class="field">
-            <label>Context (optional)</label>
-            <textarea v-model="form.context" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
-          </div>
-          <div class="field">
             <label>Constraints (optional)</label>
             <textarea v-model="form.constraints" style="min-height:80px" placeholder="Limitations, rules, format restrictions..."></textarea>
           </div>
@@ -1988,6 +2540,10 @@ createApp({
           <div class="field">
             <label>Examples (optional)</label>
             <textarea v-model="form.examples" style="min-height:80px" placeholder="Input/output examples..."></textarea>
+          </div>
+          <div class="field">
+            <label>Context (optional)</label>
+            <textarea v-model="form.context" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
           </div>
         </fieldset>
         <div class="field">
@@ -2139,6 +2695,224 @@ createApp({
           </div>
           <button class="secondary" @click="activeTab='admin'">Open Admin</button>
         </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" v-if="activeTab==='plugins'">
+      <div class="plugin-panel-header">
+        <div>
+          <h2 style="margin-top:0">Plugins</h2>
+          <p class="plugin-panel-subtitle">Each plugin appears in its own group box. Controls are rendered in the order requested by the plugin.</p>
+        </div>
+        <div class="btn-row">
+          <button class="ghost" @click="loadPlugins" :disabled="pluginsLoading">{{ pluginsLoading ? 'Loading...' : 'Refresh' }}</button>
+          <button v-if="isAdmin" class="secondary" @click="rescanPlugins" :disabled="pluginsLoading">Rescan</button>
+        </div>
+      </div>
+
+      <div class="plugin-filter-bar">
+        <div class="plugin-filter-bar-header">
+          <div class="field plugin-filter-field">
+            <label>Search by name</label>
+            <input v-model="pluginNameFilter" placeholder="example, modal, headless..." />
+          </div>
+          <button type="button" class="ghost plugin-filter-bar-toggle" @click="togglePluginFilterBar">
+            {{ pluginFilterBarOpen ? 'Hide filters' : 'Show filters' }}
+          </button>
+        </div>
+        <div v-if="pluginFilterBarOpen" class="plugin-filter-bar-body">
+          <div class="plugin-filter-tags">
+            <span class="plugin-filter-tags-label">Filter tags</span>
+            <div class="plugin-filter-tag-groups" v-if="pluginTagFilterGroups.length">
+              <div class="plugin-filter-tag-group" v-for="group in pluginTagFilterGroups" :key="group.key">
+                <div class="plugin-tag-group-title">{{ group.label }}</div>
+                <div class="chips plugin-filter-chip-list">
+                  <button
+                    v-for="tag in group.tags"
+                    :key="group.key + '-' + tag"
+                    type="button"
+                    class="chip plugin-filter-chip"
+                    :class="{ active: isPluginTagActive(tag) }"
+                    @click="togglePluginTagFilter(tag)"
+                  >
+                    {{ tag }}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <p v-else class="plugin-filter-empty">No tags available yet.</p>
+          </div>
+          <div class="plugin-filter-mode">
+            <span class="plugin-filter-tags-label">Tag match</span>
+            <div class="plugin-match-switch" role="group" aria-label="Tag match mode">
+              <button type="button" class="chip plugin-match-chip" :class="{ active: pluginTagMatchMode === 'or' }" @click="setPluginTagMatchMode('or')">OR</button>
+              <button type="button" class="chip plugin-match-chip" :class="{ active: pluginTagMatchMode === 'and' }" @click="setPluginTagMatchMode('and')">AND</button>
+            </div>
+            <p class="plugin-filter-empty">OR matches any selected tag. AND requires all selected tags.</p>
+          </div>
+          <div class="btn-row plugin-filter-actions">
+            <button class="ghost" @click="clearPluginFilters" :disabled="!pluginNameFilter && !pluginTagFilters.length">Clear filters</button>
+          </div>
+        </div>
+      </div>
+
+      <p v-if="pluginsStatus" :class="pluginsStatus.includes('Failed') ? 'status-err' : 'status-ok'">{{ pluginsStatus }}</p>
+      <p v-if="!filteredPlugins.length && !pluginsLoading" style="color:var(--muted)">No plugins match the current filters.</p>
+
+      <div class="plugin-scroll-area" v-if="filteredPlugins.length">
+        <fieldset class="group-box plugin-group-box" v-for="plugin in filteredPlugins" :key="plugin.name">
+          <legend>{{ plugin.name }}</legend>
+          <div class="plugin-card-header">
+            <div class="plugin-card-title-row">
+              <img v-if="pluginHasImageIcon(plugin.icon)" :src="plugin.icon" :alt="plugin.name" class="plugin-card-icon" />
+              <div v-else class="plugin-card-icon plugin-card-icon-fallback">{{ pluginIconFallback(plugin) }}</div>
+              <div>
+                <div class="plugin-card-title">{{ plugin.name }} <span class="plugin-card-version">v{{ plugin.version }}</span></div>
+                <div class="plugin-card-description">{{ plugin.description }}</div>
+              </div>
+            </div>
+            <div class="chips plugin-state-chips">
+              <span class="chip">{{ plugin.state }}</span>
+              <span class="chip" v-if="plugin.available">available</span>
+              <span class="chip" v-if="!plugin.compatible">incompatible</span>
+              <span class="chip chip-warn" v-if="getPluginFailureCount(plugin.name) > 0">failures: {{ getPluginFailureCount(plugin.name) }}</span>
+              <span class="chip chip-err" v-if="getPluginBlockedCount(plugin.name) > 0">blocked: {{ getPluginBlockedCount(plugin.name) }}</span>
+            </div>
+          </div>
+
+          <div class="plugin-card-meta">
+            <div><strong>Source:</strong> {{ plugin.source_path }}</div>
+            <div><strong>Routes:</strong> {{ plugin.active_routes.length }}</div>
+            <div><strong>Hooks:</strong> {{ plugin.hooks.length }}</div>
+            <div><strong>Health fails:</strong> {{ plugin.health_failures }}</div>
+            <div><strong>Signature:</strong> {{ plugin.signature_status }}<template v-if="plugin.signature_signer"> by {{ plugin.signature_signer }}</template></div>
+          </div>
+
+          <p v-if="plugin.unavailable_reason" class="status-err">{{ plugin.unavailable_reason }}</p>
+          <p v-if="plugin.last_error" class="status-err">{{ plugin.last_error }}</p>
+          <p v-if="plugin.signature_error" class="status-err">{{ plugin.signature_error }}</p>
+
+          <div class="plugin-routes" v-if="plugin.runtime_failures && Object.keys(plugin.runtime_failures).length">
+            <div class="plugin-routes-title">Runtime failure counters</div>
+            <div class="plugin-route-item" v-for="(count, endpointName) in plugin.runtime_failures" :key="endpointName">{{ endpointName }}: {{ count }}</div>
+          </div>
+
+          <div class="btn-row" v-if="isAdmin">
+            <button class="ghost" @click="managePlugin(plugin.name, 'load')" :disabled="plugin.state==='running' || !plugin.compatible">Load</button>
+            <button class="ghost" @click="managePlugin(plugin.name, 'reload')" :disabled="!plugin.compatible">Reload</button>
+            <button class="ghost" @click="managePlugin(plugin.name, 'health')">Health</button>
+            <button class="ghost" @click="togglePluginDiagnostics(plugin.name)">{{ isPluginDiagnosticsOpen(plugin.name) ? 'Hide diagnostics' : 'Diagnostics' }}</button>
+            <button class="danger" @click="managePlugin(plugin.name, 'unload')" :disabled="plugin.state==='stopped'">Unload</button>
+          </div>
+
+          <div class="btn-row" v-if="getPluginModalLaunchers(plugin).length">
+            <button
+              v-for="endpoint in getPluginModalLaunchers(plugin)"
+              :key="endpoint.name"
+              class="secondary"
+              @click="openPluginModal(plugin, endpoint.name)"
+              :disabled="!plugin.available || !plugin.compatible || pluginModalLoading"
+            >
+              {{ endpoint.description || ('Open ' + endpoint.name) }}
+            </button>
+          </div>
+
+          <div class="plugin-routes" v-if="isPluginDiagnosticsOpen(plugin.name)">
+            <div class="plugin-routes-title">Diagnostics</div>
+            <p v-if="isPluginDiagnosticsLoading(plugin.name)" style="margin:0;color:var(--muted)">Loading diagnostics...</p>
+            <template v-else>
+              <p v-if="getPluginDiagnostics(plugin.name)?.error" class="status-err" style="margin:0">{{ getPluginDiagnostics(plugin.name).error }}</p>
+              <template v-else>
+                <div class="plugin-route-item">State: {{ getPluginDiagnostics(plugin.name)?.state || 'unknown' }}</div>
+                <div class="plugin-route-item">Lifecycle active: {{ getPluginDiagnostics(plugin.name)?.lifecycle_active ? 'yes' : 'no' }}</div>
+                <div class="plugin-route-item">Health failures: {{ getPluginDiagnostics(plugin.name)?.health_failures ?? 0 }}</div>
+                <div class="plugin-route-item">Endpoint diagnostics:</div>
+                <div
+                  class="plugin-route-item"
+                  v-for="entry in (getPluginDiagnostics(plugin.name)?.endpoint_diagnostics || [])"
+                  :key="'endpoint-' + plugin.name + '-' + entry.endpoint_name"
+                >
+                  {{ entry.endpoint_name }} | failures: {{ entry.consecutive_failures }} | blocked: {{ entry.blocked ? 'yes' : 'no' }}<template v-if="entry.last_error"> | last error: {{ entry.last_error }}</template>
+                </div>
+                <div class="plugin-route-item">Hook diagnostics:</div>
+                <div
+                  class="plugin-route-item"
+                  v-for="entry in (getPluginDiagnostics(plugin.name)?.hook_diagnostics || [])"
+                  :key="'hook-' + plugin.name + '-' + entry.hook_key"
+                >
+                  {{ entry.hook_key }} | failures: {{ entry.consecutive_failures }} | blocked: {{ entry.blocked ? 'yes' : 'no' }}<template v-if="entry.last_error"> | last error: {{ entry.last_error }}</template>
+                </div>
+              </template>
+            </template>
+          </div>
+
+          <div class="plugin-routes" v-if="plugin.active_routes.length">
+            <div class="plugin-routes-header">
+              <div class="plugin-routes-title">Registered routes</div>
+              <button type="button" class="ghost plugin-routes-toggle" @click="togglePluginRoutes(plugin.name)">
+                {{ isPluginRoutesOpen(plugin.name) ? 'Hide' : 'Show' }}
+              </button>
+            </div>
+            <div v-if="isPluginRoutesOpen(plugin.name)">
+              <div class="plugin-route-item" v-for="route in plugin.active_routes" :key="route">{{ route }}</div>
+            </div>
+          </div>
+
+          <div class="plugin-controls" v-if="plugin.ui_controls && plugin.ui_controls.length">
+            <div class="plugin-control" v-for="control in plugin.ui_controls" :key="control.name">
+              <label>{{ control.label }}</label>
+              <p v-if="control.description" class="plugin-control-description">{{ control.description }}</p>
+
+              <label class="gc-switch" v-if="control.control_type==='checkbox'">
+                <input
+                  type="checkbox"
+                  :checked="!!getPluginControlValue(plugin.name, control.name)"
+                  :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
+                  @change="invokePluginControl(plugin, control, $event.target.checked)"
+                />
+                <span class="gc-switch-track"></span>
+                <span class="gc-switch-label">{{ getPluginControlValue(plugin.name, control.name) ? 'Enabled' : 'Disabled' }}</span>
+              </label>
+
+              <select
+                v-else-if="control.control_type==='dropdown'"
+                class="select-pretty"
+                :value="getPluginControlValue(plugin.name, control.name)"
+                :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
+                @change="invokePluginControl(plugin, control, $event.target.value)"
+              >
+                <option v-for="option in control.options" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+
+              <div v-else-if="control.control_type==='button'" class="btn-row">
+                <button class="secondary" @click="invokePluginControl(plugin, control)" :disabled="!canUsePluginControl(plugin, control) || !plugin.available">
+                  {{ control.label }}
+                </button>
+              </div>
+
+              <input
+                v-else-if="control.control_type==='text'"
+                :value="getPluginControlValue(plugin.name, control.name)"
+                :placeholder="control.placeholder || ''"
+                :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
+                @change="invokePluginControl(plugin, control, $event.target.value)"
+              />
+
+              <textarea
+                v-else-if="control.control_type==='textarea'"
+                :value="getPluginControlValue(plugin.name, control.name)"
+                :placeholder="control.placeholder || ''"
+                :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
+                @change="invokePluginControl(plugin, control, $event.target.value)"
+              ></textarea>
+            </div>
+          </div>
+          <p v-else class="plugin-empty-note">This plugin does not request visual controls.</p>
+
+          <p v-if="pluginResponses[plugin.name]" :class="pluginResponses[plugin.name].type === 'err' ? 'status-err' : 'status-ok'">
+            {{ pluginResponses[plugin.name].message }}
+          </p>
+        </fieldset>
       </div>
     </div>
 
@@ -2376,6 +3150,89 @@ createApp({
             <button class="secondary" :disabled="optimizerLoading" @click="reoptimizePrompt">Reoptimize</button>
             <button @click="applyOptimizedPrompt">Update Prompt</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" v-if="pluginModalOpen" @click.self="closePluginModal(false)">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <h3>{{ pluginModalSession?.modal?.title || pluginModalPluginName || 'Plugin Modal' }}</h3>
+            <p v-if="pluginModalSession?.modal?.description" style="margin:4px 0 0;color:var(--muted)">{{ pluginModalSession.modal.description }}</p>
+          </div>
+          <div class="btn-row" style="margin-top:0">
+            <button class="ghost" v-if="pluginModalSession?.modal?.allow_stop !== false" @click="stopPluginModal" :disabled="pluginModalLoading || pluginModalSession?.state === 'stopped'">{{ pluginModalSession?.modal?.stop_label || 'Stop Plugin' }}</button>
+            <button class="ghost" @click="closePluginModal(true)">{{ pluginModalSession?.modal?.close_label || 'Close' }}</button>
+          </div>
+        </div>
+
+        <p class="status-err" v-if="pluginModalError">{{ pluginModalError }}</p>
+        <p v-if="pluginModalStatus" style="margin:0 0 8px;color:var(--muted)">Status: {{ pluginModalStatus }}</p>
+        <p v-if="pluginModalLoading" style="margin:0 0 10px;color:var(--muted)">Modal operation is running on backend ...</p>
+
+        <div class="md-content" v-if="pluginModalSession?.modal?.body_markdown" v-html="md(pluginModalSession.modal.body_markdown)"></div>
+
+        <div class="optimizer-log-box" v-if="pluginModalSession?.logs?.length || pluginModalSession?.last_error || pluginModalSession?.state">
+          <div class="optimizer-log-title">Modal session</div>
+          <div class="optimizer-log-empty" v-if="!pluginModalSession?.logs?.length && !pluginModalSession?.last_error">No modal log entries yet.</div>
+          <div class="optimizer-log-line log-warn" v-if="pluginModalSession?.state">State: {{ pluginModalSession.state }}</div>
+          <div class="optimizer-log-line log-error" v-if="pluginModalSession?.last_error">Error: {{ pluginModalSession.last_error }}</div>
+          <div class="optimizer-log-line" v-for="(entry, idx) in (pluginModalSession?.logs || [])" :key="'modal-log-' + idx">{{ entry }}</div>
+        </div>
+
+        <div class="plugin-controls" v-if="pluginModalControls.length">
+          <div class="plugin-control" v-for="control in pluginModalControls" :key="control.name">
+            <label>{{ control.label }}</label>
+            <p v-if="control.description" class="plugin-control-description">{{ control.description }}</p>
+
+            <label class="gc-switch" v-if="control.control_type==='checkbox'">
+              <input
+                type="checkbox"
+                :checked="!!getPluginModalControlValue(control.name)"
+                :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
+                @change="invokePluginModalControl(control, $event.target.checked)"
+              />
+              <span class="gc-switch-track"></span>
+              <span class="gc-switch-label">{{ getPluginModalControlValue(control.name) ? 'Enabled' : 'Disabled' }}</span>
+            </label>
+
+            <select
+              v-else-if="control.control_type==='dropdown'"
+              class="select-pretty"
+              :value="getPluginModalControlValue(control.name)"
+              :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
+              @change="invokePluginModalControl(control, $event.target.value)"
+            >
+              <option v-for="option in control.options" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+
+            <div v-else-if="control.control_type==='button'" class="btn-row">
+              <button class="secondary" @click="invokePluginModalControl(control)" :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading">
+                {{ control.label }}
+              </button>
+            </div>
+
+            <input
+              v-else-if="control.control_type==='text'"
+              :value="getPluginModalControlValue(control.name)"
+              :placeholder="control.placeholder || ''"
+              :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
+              @change="invokePluginModalControl(control, $event.target.value)"
+            />
+
+            <textarea
+              v-else-if="control.control_type==='textarea'"
+              :value="getPluginModalControlValue(control.name)"
+              :placeholder="control.placeholder || ''"
+              :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
+              @change="invokePluginModalControl(control, $event.target.value)"
+            ></textarea>
+          </div>
+        </div>
+
+        <div class="btn-row" style="margin-top:12px">
+          <button class="secondary" @click="refreshPluginModal" :disabled="pluginModalLoading || !pluginModalSession">Refresh</button>
         </div>
       </div>
     </div>
