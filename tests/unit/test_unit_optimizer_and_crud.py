@@ -12,6 +12,7 @@ import main
 import optimizer.service as optimizer_service
 from database import Base, init_database
 from models import Project, Prompt, Role, Tag
+from optimizer.utils import _build_full_prompt
 from optimizer.service import (
     LeoPromptOptimizerBackend,
     _normalize_text,
@@ -54,6 +55,22 @@ def test_parse_structured_response_uses_fallbacks():  # type: ignore[no-untyped-
     assert parsed["task"] == "Improved task."
     assert parsed["constraints"] == "Keep short"
     assert parsed["context"] == "fallback context"
+
+
+def test_build_full_prompt_places_context_last():  # type: ignore[no-untyped-def]
+    prompt = _build_full_prompt(
+        {
+            "role": "assistant",
+            "task": "Refine this prompt",
+            "context": "Extra context",
+            "constraints": "Be concise",
+            "output_format": "Markdown",
+            "examples": "Example text",
+        }
+    )
+
+    assert prompt.split("\n\n")[-1] == "Context: Extra context"
+    assert prompt.index("Task: Refine this prompt") < prompt.index("Context: Extra context")
 
 
 def test_runtime_config_applies_llm_model():  # type: ignore[no-untyped-def]
