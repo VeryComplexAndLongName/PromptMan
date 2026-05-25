@@ -7,3 +7,6 @@ requests
 leo-prompt-optimizer
 loguru
 cryptography
+tiktoken
+rapidfuzz
+rich
