@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,6 +15,52 @@ from plugin_engine import (
 )
 
 from plugins.efficiency_analizer_ui._prompt_efficiency_analizer import PromptEfficiencyAnalyzer
+
+
+_METRIC_GLOSSARY: dict[str, str] = {
+    "PSI": "Prompt Stability Index — overall structural consistency of the prompt across all versions (0..1, higher = more stable)",
+    "Cache Hit Score": "Estimated probability that a caching layer would serve this prompt from its cache without re-execution (0..1)",
+    "Hybrid Similarity": "Weighted blend of Levenshtein, Jaro-Winkler and Jaccard similarity between adjacent prompt versions (0..1)",
+    "Context Drift": "Degree of semantic shift in the context segment across consecutive versions (0..1, lower = more stable)",
+    "Constraint Strictness": "How prescriptive and binding the constraints section is — strict rules score higher (0..1)",
+    "Ambiguity Score": "Level of vagueness and open-ended phrasing detected in the prompt (0..1, lower = clearer)",
+    "Injection Surface": "Estimated exposure to prompt-injection attacks — open-ended input slots raise this score (0..1, lower = safer)",
+    "Segment Volatility": "Proportion of prompt segments (role/task/context/…) that changed between versions (0..1)",
+    "Placeholder Stability": "Consistency of named placeholder variables (e.g. {name}) across all versions (0..1)",
+    "Readability": "Flesch-Kincaid-style reading ease estimate for the prompt text (0..1, higher = easier to read)",
+    "Token Budget Safety": "Estimated margin before the context-window token limit is reached (0..1, higher = more headroom)",
+    "Redundancy": "Presence of duplicate or near-duplicate phrases inside a single version (0..1, lower = less redundant)",
+    "Schema Compliance": "How well the output_format section defines a machine-parseable structure (0..1)",
+    "Conflict Risk": "Probability of contradictory instructions or constraints within a version (0..1, lower = less risk)",
+    "Levenshtein": "Edit-distance-based similarity — counts minimum character insertions, deletions and substitutions (0..1)",
+    "Jaro-Winkler": "String similarity metric that rewards common prefixes; works well on short strings (0..1)",
+    "Jaccard": "Set-based similarity of word tokens — intersection / union of unique words (0..1)",
+    "Token Count": "Number of tokens in the prompt as counted by the selected tiktoken encoding",
+    "Prompt Stability Index": "PSI — overall structural consistency of the prompt across all versions (0..1, higher = more stable)",
+}
+
+
+def _annotate_metric_terms(text: str) -> str:
+    """Wrap known metric names in <abbr title='...'> for Report tab tooltips."""
+    terms = sorted(_METRIC_GLOSSARY, key=len, reverse=True)
+    term_lookup = {term.lower(): term for term in terms}
+    pattern = re.compile(rf"(?<![\w])({'|'.join(re.escape(term) for term in terms)})(?![\w])", flags=re.IGNORECASE)
+
+    def _replace_metric(match: re.Match[str]) -> str:
+        matched_text = match.group(1)
+        canonical = term_lookup.get(matched_text.lower())
+        if not canonical:
+            return matched_text
+        description = _METRIC_GLOSSARY[canonical]
+        safe_desc = description.replace('"', "&quot;")
+        return f'<abbr title="{safe_desc}">{matched_text}</abbr>'
+
+    parts = re.split(r"(<[^>]+>)", text)
+    for idx, part in enumerate(parts):
+        if part.startswith("<") and part.endswith(">"):
+            continue
+        parts[idx] = pattern.sub(_replace_metric, part)
+    return "".join(parts)
 
 _DEFAULTS: dict[str, Any] = {
     "source_mode": "promptman_versions",
@@ -59,6 +106,109 @@ _STATE: dict[str, Any] = {
     "last_rich_report": "",
     **_DEFAULTS,
 }
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _chart_points_from_transitions(transitions: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for item in transitions:
+        from_label = str(item.get("from_label") or "?")
+        to_label = str(item.get("to_label") or "?")
+        points.append(
+            {
+                "label": f"{from_label}->{to_label}",
+                "value": _as_float(item.get(field), 0.0),
+            }
+        )
+    return points
+
+
+def _chart_points_prompt_tokens(prompts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for item in prompts:
+        token_counts = item.get("token_counts") if isinstance(item.get("token_counts"), dict) else {}
+        points.append(
+            {
+                "label": str(item.get("label") or "?"),
+                "value": _as_float(token_counts.get("total"), 0.0),
+            }
+        )
+    return points
+
+
+def _build_tabs(*, report_markdown: str, result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    summary = result.get("summary") if isinstance(result, dict) and isinstance(result.get("summary"), dict) else {}
+    prompts = result.get("prompts") if isinstance(result, dict) and isinstance(result.get("prompts"), list) else []
+    transitions = result.get("transitions") if isinstance(result, dict) and isinstance(result.get("transitions"), list) else []
+
+    _ = summary
+
+    charts = [
+        {
+            "id": "hybrid-trend",
+            "title": "Hybrid Similarity by Transition",
+            "tooltip": _METRIC_GLOSSARY["Hybrid Similarity"],
+            "kind": "line",
+            "points": _chart_points_from_transitions(transitions, "hybrid_similarity"),
+            "value_min": 0.0,
+            "value_max": 1.0,
+            "y_label": "0..1",
+        },
+        {
+            "id": "cache-trend",
+            "title": "Cache Hit Score by Transition",
+            "tooltip": _METRIC_GLOSSARY["Cache Hit Score"],
+            "kind": "line",
+            "points": _chart_points_from_transitions(transitions, "cache_hit_score"),
+            "value_min": 0.0,
+            "value_max": 1.0,
+            "y_label": "0..1",
+        },
+        {
+            "id": "drift-trend",
+            "title": "Context Drift by Transition",
+            "tooltip": _METRIC_GLOSSARY["Context Drift"],
+            "kind": "line",
+            "points": _chart_points_from_transitions(transitions, "context_drift"),
+            "value_min": 0.0,
+            "value_max": 1.0,
+            "y_label": "0..1",
+        },
+        {
+            "id": "token-volume",
+            "title": "Total Tokens by Prompt Version",
+            "tooltip": _METRIC_GLOSSARY["Token Count"],
+            "kind": "bar",
+            "points": _chart_points_prompt_tokens(prompts),
+            "y_label": "tokens",
+        },
+    ]
+
+    return [
+        {
+            "id": "inputs",
+            "label": "Input",
+            "body_markdown": "### Input\nConfigure source and analyzer settings, then run analysis.",
+            "controls": _modal_controls(),
+        },
+        {
+            "id": "reports",
+            "label": "Reports",
+            "body_markdown": _annotate_metric_terms(report_markdown),
+        },
+        {
+            "id": "charts",
+            "label": "Charts",
+            "body_markdown": "### Charts\nTransition trends and token volume for current run.",
+            "charts": charts,
+        },
+    ]
 
 
 def _modal_controls() -> list[PluginUiControl]:
@@ -183,12 +333,14 @@ def _modal_controls() -> list[PluginUiControl]:
     ]
 
 
-def _build_modal_spec(*, body_markdown: str, status: str) -> dict[str, Any]:
+def _build_modal_spec(*, body_markdown: str, status: str, result: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "title": "Prompt Efficiency Analyzer",
         "description": "Deterministic local prompt analysis without LLM calls.",
         "body_markdown": body_markdown,
-        "controls": _modal_controls(),
+        "tabs": _build_tabs(report_markdown=body_markdown, result=result),
+        "active_tab": "inputs" if result is None else "reports",
+        "controls": [],
         "allow_stop": True,
         "stop_label": "Stop Analyzer",
         "close_label": "Close",
@@ -206,6 +358,10 @@ def _build_intro_body() -> str:
         "- Similarity metrics (Levenshtein, Jaro-Winkler, Jaccard)\n"
         "- Cache hit score and PSI\n"
         "- Context drift analysis\n"
+        "- Segment volatility and placeholder stability\n"
+        "- Constraint strictness and ambiguity signals\n"
+        "- Output schema compliance and redundancy\n"
+        "- Conflict risk, injection surface, readability, and token budget safety\n"
         "- Rich/Markdown report generation\n\n"
         "Choose source, configure fields, and click **Run efficiency analysis**."
     )
@@ -244,7 +400,7 @@ def _render_modal_report(result: dict[str, Any], report_format: str) -> str:
         return markdown_text
     if report_format == "rich":
         return f"```text\n{rich_text.strip()}\n```"
-    return f"{markdown_text}\n\n---\n\n```text\n{rich_text.strip()}\n```"
+    return markdown_text
 
 
 def plugin_preinit() -> PluginManifest:
@@ -291,7 +447,7 @@ def plugin_run(context: PluginRunContext) -> dict[str, Any]:
         return {
             "ok": True,
             "message": "Prompt Efficiency Analyzer opened",
-            "modal": _build_modal_spec(body_markdown=str(body), status="Ready"),
+            "modal": _build_modal_spec(body_markdown=str(body), status="Ready", result=None),
         }
 
     if context.endpoint_name == "update_control_init":
@@ -361,7 +517,7 @@ def plugin_run(context: PluginRunContext) -> dict[str, Any]:
                 f"Average cache hit score: {avg_cache_hit}",
             ],
             "result": result,
-            "modal": _build_modal_spec(body_markdown=report_body, status=f"Completed (PSI: {psi})"),
+            "modal": _build_modal_spec(body_markdown=report_body, status=f"Completed (PSI: {psi})", result=result),
         }
 
     return {"ok": False, "message": f"Unknown endpoint {context.endpoint_name}"}

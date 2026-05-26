@@ -477,6 +477,10 @@ class PluginEngine:
         for control in modal.controls:
             if control.name == control_name:
                 return control
+        for tab in modal.tabs:
+            for control in tab.controls:
+                if control.name == control_name:
+                    return control
         return None
 
     def _normalize_modal_spec(self, modal: PluginModalSpec | dict[str, Any], plugin_name: str) -> PluginModalSpec:
@@ -495,7 +499,11 @@ class PluginEngine:
         return ""
 
     async def _hydrate_modal_controls(self, session: PluginModalSession, *, request: Request, current_user: Any | None) -> None:
-        for control in session.modal.controls:
+        controls: list[PluginUiControl] = list(session.modal.controls)
+        for tab in session.modal.tabs:
+            controls.extend(tab.controls)
+
+        for control in controls:
             if control.name in session.control_values and session.control_values[control.name] is not None:
                 continue
             init_endpoint = control.init_endpoint_name or f"{control.endpoint_name}_init"

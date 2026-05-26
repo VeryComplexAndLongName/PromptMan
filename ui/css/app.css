@@ -1010,6 +1010,169 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
   font-size: 1.05rem;
 }
 
+.plugin-modal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 10px;
+}
+
+.plugin-modal-tab-btn {
+  border: 1px solid rgba(38,102,127,0.32);
+  background: rgba(38,102,127,0.08);
+  color: var(--accent-2);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: 700 0.78rem "Space Grotesk", sans-serif;
+  letter-spacing: 0.02em;
+}
+
+.plugin-modal-tab-btn.active {
+  background: var(--accent-2);
+  color: #fff;
+  border-color: var(--accent-2);
+}
+
+.plugin-modal-tab-btn:hover {
+  filter: saturate(1.05);
+}
+
+/* ── Tooltip (data-tooltip attribute) ───────────────────────── */
+[data-tooltip] {
+  position: relative;
+  cursor: help;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 5px);
+  z-index: 300;
+  background: rgba(23,32,38,0.93);
+  color: #f8f6f0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.73rem;
+  font-weight: 400;
+  white-space: normal;
+  width: max-content;
+  max-width: 280px;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+  line-height: 1.5;
+}
+[data-tooltip]:hover::after {
+  display: block;
+}
+
+/* abbr hints inside rendered markdown */
+.md-content abbr[title] {
+  text-decoration: underline dotted rgba(23,32,38,0.35);
+  cursor: help;
+  position: relative;
+}
+.md-content abbr[title]::after {
+  content: attr(title);
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 300;
+  background: rgba(23,32,38,0.93);
+  color: #f8f6f0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.73rem;
+  white-space: normal;
+  width: max-content;
+  max-width: 280px;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.22);
+  line-height: 1.5;
+}
+.md-content abbr[title]:hover::after {
+  display: block;
+}
+
+.plugin-chart-panels {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.plugin-chart-panel {
+  border: 1px solid rgba(23,32,38,0.1);
+  border-radius: 12px;
+  background: rgba(248,246,240,0.82);
+  padding: 10px;
+}
+
+.plugin-chart-title {
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 2px;
+  width: fit-content;
+}
+.plugin-chart-title[data-tooltip] {
+  border-bottom: 1.5px dotted rgba(23,32,38,0.35);
+}
+
+.plugin-chart-y-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 8px;
+}
+
+.plugin-chart-empty {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.plugin-chart-bars {
+  display: grid;
+  gap: 6px;
+}
+
+.plugin-chart-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 150px) 1fr minmax(64px, 90px);
+  gap: 8px;
+  align-items: center;
+}
+
+.plugin-chart-point-label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plugin-chart-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(23,32,38,0.12);
+  overflow: hidden;
+}
+
+.plugin-chart-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #26667f, #5ba0bb);
+}
+
+.plugin-chart-value {
+  text-align: right;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.76rem;
+  color: var(--ink);
+  border-left: 1.5px solid rgba(23,32,38,0.12);
+  padding-left: 10px;
+  margin-left: 2px;
+}
+
 .optimizer-elapsed {
   margin: 0 0 8px;
   font-size: 0.9rem;
@@ -1050,6 +1213,39 @@ button:hover { transform: translateY(-1px); filter: saturate(1.15); }
   margin: 2px 0;
   color: var(--ink);
   font-size: 0.9rem;
+}
+
+.plugin-modal-controls {
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.plugin-modal-controls .plugin-control {
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.plugin-modal-controls label {
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+
+.plugin-modal-controls .plugin-control-description {
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+}
+
+.plugin-modal-controls input,
+.plugin-modal-controls textarea,
+.plugin-modal-controls select {
+  padding: 7px 9px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.plugin-modal-controls textarea {
+  min-height: 86px;
+  max-height: 220px;
 }
 
 .opt-config-box {
