@@ -266,7 +266,18 @@ Visible for admins only.
 
 Viewer does not have access to this tab.
 
-### Global Config In UI
+
+## Plugins
+
+PromptMan supports extenable plugin system (EPS). Repository already contains a test plugins shows up an EPS ability.
+
+In `plugins/` you can find `README.md` with plugin types description, instruction on how to create your own plugins, sign and integration plugins. In `plugins/examples/` You can see pluginf of all three types.
+
+PromptMan includes a built‑in **Prompt Efficiency Analyzer** plugin designed to measure the stability, predictability, and cache‑friendliness of prompt versions.  
+The analyzer works **locally**, does not call any LLMs, and requires no external services.  
+It evaluates prompt efficiency across several key metrics. It locates in `plugins/` folder
+
+## Global Config in UI
 
 Visible for admins in the Config tab.
 
