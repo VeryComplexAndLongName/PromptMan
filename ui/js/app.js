@@ -216,6 +216,7 @@ createApp({
     const pluginModalPluginName = ref("");
     const pluginModalEndpointName = ref("");
     const pluginModalBackdropArmed = ref(false);
+    const pluginModalActiveTab = ref("");
     const pluginNameFilter = ref("");
     const pluginTagFilters = ref([]);
     const pluginTagMatchMode = ref(normalizePluginTagMatchMode(window.localStorage.getItem(PLUGIN_TAG_MATCH_MODE_STORAGE_KEY)));
@@ -902,7 +903,84 @@ createApp({
       return endpoints.filter((endpoint) => !!endpoint.launches_modal);
     };
 
-    const pluginModalControls = computed(() => pluginModalSession.value?.modal?.controls || []);
+    const pluginModalTabs = computed(() => {
+      const tabs = pluginModalSession.value?.modal?.tabs;
+      return Array.isArray(tabs) ? tabs : [];
+    });
+
+    const pluginModalActiveTabSpec = computed(() => {
+      const tabs = pluginModalTabs.value;
+      if (!tabs.length) return null;
+      return tabs.find((tab) => tab.id === pluginModalActiveTab.value) || tabs[0] || null;
+    });
+
+    const pluginModalBodyMarkdown = computed(() => {
+      if (pluginModalActiveTabSpec.value?.body_markdown) {
+        return pluginModalActiveTabSpec.value.body_markdown;
+      }
+      return pluginModalSession.value?.modal?.body_markdown || "";
+    });
+
+    const pluginModalCharts = computed(() => {
+      const tabCharts = pluginModalActiveTabSpec.value?.charts;
+      return Array.isArray(tabCharts) ? tabCharts : [];
+    });
+
+    const pluginModalControls = computed(() => {
+      const baseControls = Array.isArray(pluginModalSession.value?.modal?.controls)
+        ? pluginModalSession.value.modal.controls
+        : [];
+      const tabControls = Array.isArray(pluginModalActiveTabSpec.value?.controls)
+        ? pluginModalActiveTabSpec.value.controls
+        : [];
+      const merged = [...baseControls, ...tabControls];
+      const seen = new Set();
+      return merged.filter((control) => {
+        const key = String(control?.name || "");
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    });
+
+    const selectPluginModalTab = (tabId) => {
+      pluginModalActiveTab.value = String(tabId || "");
+    };
+
+    const ensurePluginModalActiveTab = () => {
+      const tabs = pluginModalTabs.value;
+      if (!tabs.length) {
+        pluginModalActiveTab.value = "";
+        return;
+      }
+      const preferred = String(pluginModalSession.value?.modal?.active_tab || "");
+      const exists = tabs.some((tab) => tab.id === pluginModalActiveTab.value);
+      if (exists) return;
+      if (preferred && tabs.some((tab) => tab.id === preferred)) {
+        pluginModalActiveTab.value = preferred;
+        return;
+      }
+      pluginModalActiveTab.value = String(tabs[0].id || "");
+    };
+
+    const getPluginModalChartBounds = (chart) => {
+      const points = Array.isArray(chart?.points) ? chart.points : [];
+      if (!points.length) return { min: 0, max: 1 };
+      const values = points.map((point) => Number(point?.value || 0));
+      let minValue = Number.isFinite(Number(chart?.value_min)) ? Number(chart.value_min) : Math.min(...values);
+      let maxValue = Number.isFinite(Number(chart?.value_max)) ? Number(chart.value_max) : Math.max(...values);
+      if (maxValue <= minValue) {
+        maxValue = minValue + 1;
+      }
+      return { min: minValue, max: maxValue };
+    };
+
+    const getPluginModalChartPointStyle = (chart, point) => {
+      const value = Number(point?.value || 0);
+      const bounds = getPluginModalChartBounds(chart);
+      const ratio = Math.max(0, Math.min(1, (value - bounds.min) / (bounds.max - bounds.min)));
+      return { width: `${(ratio * 100).toFixed(1)}%` };
+    };
 
     const getPluginModalControlValue = (controlName) => {
       return pluginModalSession.value?.control_values?.[controlName];
@@ -941,6 +1019,7 @@ createApp({
         }
         const session = await res.json();
         pluginModalSession.value = session;
+        ensurePluginModalActiveTab();
         pluginModalPluginName.value = plugin.name;
         pluginModalEndpointName.value = endpointName;
         pluginModalOpen.value = true;
@@ -960,6 +1039,7 @@ createApp({
         return;
       }
       pluginModalSession.value = await res.json();
+      ensurePluginModalActiveTab();
     };
 
     const invokePluginModalControl = async (control, overrideValue = undefined) => {
@@ -989,6 +1069,7 @@ createApp({
         return;
       }
       pluginModalSession.value = await res.json();
+      ensurePluginModalActiveTab();
       pluginModalStatus.value = pluginModalSession.value?.modal?.status || pluginModalStatus.value;
     };
 
@@ -1003,6 +1084,7 @@ createApp({
         return;
       }
       pluginModalSession.value = await res.json();
+      ensurePluginModalActiveTab();
       pluginModalStatus.value = pluginModalSession.value?.modal?.status || "Modal stopped";
     };
 
@@ -1025,6 +1107,7 @@ createApp({
       pluginModalSession.value = null;
       pluginModalPluginName.value = "";
       pluginModalEndpointName.value = "";
+      pluginModalActiveTab.value = "";
     };
 
     const handlePluginModalBackdropPointerDown = () => {
@@ -2253,7 +2336,9 @@ createApp({
       getPluginTags, togglePluginTagFilter, clearPluginFilters, togglePluginFilterBar, isPluginTagActive, setPluginTagMatchMode,
       isPluginRoutesOpen, togglePluginRoutes,
       getPluginModalLaunchers, pluginModalOpen, pluginModalLoading, pluginModalError, pluginModalStatus, pluginModalSession,
+      pluginModalTabs, pluginModalActiveTab, pluginModalBodyMarkdown, pluginModalCharts,
       pluginModalControls, getPluginModalControlValue, openPluginModal, invokePluginModalControl, stopPluginModal, closePluginModal, refreshPluginModal,
+      selectPluginModalTab, getPluginModalChartPointStyle,
       toggleProjectSelection, isProjectSelected,
       visibleHeaderTags, hiddenHeaderTagCount,
       formatUtcDateTime, formatAuditLine, accessTokenCountdown, nextRefreshCountdown, nextRefreshAt, accessTokenExpiresAt,
@@ -3191,9 +3276,42 @@ createApp({
         <p v-if="pluginModalStatus" style="margin:0 0 8px;color:var(--muted)">Status: {{ pluginModalStatus }}</p>
         <p v-if="pluginModalLoading" style="margin:0 0 10px;color:var(--muted)">Modal operation is running on backend ...</p>
 
-        <div class="md-content" v-if="pluginModalSession?.modal?.body_markdown" v-html="md(pluginModalSession.modal.body_markdown)"></div>
+        <div class="plugin-modal-tabs" v-if="pluginModalTabs.length">
+          <button
+            class="plugin-modal-tab-btn"
+            v-for="tab in pluginModalTabs"
+            :key="'plugin-modal-tab-' + tab.id"
+            :class="{ active: pluginModalActiveTab === tab.id }"
+            @click="selectPluginModalTab(tab.id)"
+            type="button"
+          >
+            {{ tab.label || tab.id }}
+          </button>
+        </div>
 
-        <div class="optimizer-log-box" v-if="pluginModalSession?.logs?.length || pluginModalSession?.last_error || pluginModalSession?.state">
+        <div class="md-content" v-if="pluginModalBodyMarkdown" v-html="md(pluginModalBodyMarkdown)"></div>
+
+        <div class="plugin-chart-panels" v-if="pluginModalCharts.length">
+          <div class="plugin-chart-panel" v-for="chart in pluginModalCharts" :key="chart.id">
+            <div class="plugin-chart-title" :data-tooltip="chart.tooltip || undefined">{{ chart.title || chart.id }}</div>
+            <div class="plugin-chart-y-label" v-if="chart.y_label">{{ chart.y_label }}</div>
+            <div class="plugin-chart-empty" v-if="!chart.points || !chart.points.length">No chart data.</div>
+            <div class="plugin-chart-bars" v-else>
+              <div class="plugin-chart-row" v-for="(point, idx) in chart.points" :key="chart.id + '-point-' + idx">
+                <div class="plugin-chart-point-label">{{ point.label }}</div>
+                <div class="plugin-chart-track">
+                  <div class="plugin-chart-fill" :style="getPluginModalChartPointStyle(chart, point)"></div>
+                </div>
+                <div class="plugin-chart-value">{{ Number(point.value || 0).toFixed(4) }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          class="optimizer-log-box"
+          v-if="(pluginModalActiveTab === 'inputs' || !pluginModalTabs.length) && (pluginModalSession?.logs?.length || pluginModalSession?.last_error || pluginModalSession?.state)"
+        >
           <div class="optimizer-log-title">Modal session</div>
           <div class="optimizer-log-empty" v-if="!pluginModalSession?.logs?.length && !pluginModalSession?.last_error">No modal log entries yet.</div>
           <div class="optimizer-log-line log-warn" v-if="pluginModalSession?.state">State: {{ pluginModalSession.state }}</div>
@@ -3201,7 +3319,7 @@ createApp({
           <div class="optimizer-log-line" v-for="(entry, idx) in (pluginModalSession?.logs || [])" :key="'modal-log-' + idx">{{ entry }}</div>
         </div>
 
-        <div class="plugin-controls" v-if="pluginModalControls.length">
+        <div class="plugin-controls plugin-modal-controls" v-if="pluginModalControls.length">
           <div class="plugin-control" v-for="control in pluginModalControls" :key="control.name">
             <label>{{ control.label }}</label>
             <p v-if="control.description" class="plugin-control-description">{{ control.description }}</p>

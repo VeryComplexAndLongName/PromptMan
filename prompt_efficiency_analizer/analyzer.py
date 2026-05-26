@@ -9,6 +9,11 @@ import requests
 
 from prompt_efficiency_analizer.cache_estimator import compute_prompt_stability_index, estimate_cache_hit_score
 from prompt_efficiency_analizer.drift import analyze_context_drift, context_change_ratio
+from prompt_efficiency_analizer.quality_metrics import (
+    compute_prompt_quality_metrics,
+    placeholder_stability,
+    segment_volatility,
+)
 from prompt_efficiency_analizer.report import build_markdown_report, build_rich_report_text
 from prompt_efficiency_analizer.segmentation import compose_prompt_text, segment_prompt
 from prompt_efficiency_analizer.similarity import compute_similarity
@@ -41,9 +46,15 @@ class PromptSnapshot:
 class PromptEfficiencyAnalyzer:
     """High-level API for deterministic prompt efficiency analysis without LLM usage."""
 
-    def __init__(self, encoding_name: str = "cl100k_base", request_timeout_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        encoding_name: str = "cl100k_base",
+        request_timeout_seconds: float = 15.0,
+        context_window_tokens: int | None = None,
+    ) -> None:
         self.encoding_name = encoding_name
         self.request_timeout_seconds = request_timeout_seconds
+        self.context_window_tokens = context_window_tokens
         self._counter = TokenCounter(encoding_name=encoding_name)
 
     def analyze_prompt_chain(self, prompts: Sequence[Mapping[str, object]], source: str = "json_chain") -> dict[str, object]:
@@ -185,12 +196,21 @@ class PromptEfficiencyAnalyzer:
 
         prompts_section: list[dict[str, object]] = []
         for index, snapshot in enumerate(snapshots):
+            prompt_text = compose_prompt_text(segmented[index])
+            quality = compute_prompt_quality_metrics(
+                segments=segmented[index],
+                prompt_text=prompt_text,
+                token_counts=token_stats[index],
+                encoding_name=self.encoding_name,
+                context_window_tokens=self.context_window_tokens,
+            )
             prompts_section.append(
                 {
                     "label": snapshot.label,
                     "segments": segmented[index],
                     "token_counts": token_stats[index],
-                    "prompt_text": compose_prompt_text(segmented[index]),
+                    "prompt_text": prompt_text,
+                    "quality": quality,
                 }
             )
 
@@ -208,6 +228,11 @@ class PromptEfficiencyAnalyzer:
                 str(prev_item["segments"].get("context", "")),  # type: ignore[union-attr]
                 str(current_item["segments"].get("context", "")),  # type: ignore[union-attr]
             )
+            placeholder = placeholder_stability(str(prev_item["prompt_text"]), str(current_item["prompt_text"]))
+            volatility = segment_volatility(  # type: ignore[arg-type]
+                prev_item["segments"],
+                current_item["segments"],
+            )
             pairwise_hybrid.append(similarity["hybrid"])
             cache_scores.append(cache_hit_score)
             transitions.append(
@@ -220,6 +245,11 @@ class PromptEfficiencyAnalyzer:
                     "hybrid_similarity": round(similarity["hybrid"], 4),
                     "cache_hit_score": round(cache_hit_score, 4),
                     "context_drift": round(drift, 4),
+                    "segment_volatility": volatility,
+                    "placeholder_stability": placeholder["stability"],
+                    "placeholder_added": placeholder["added"],
+                    "placeholder_removed": placeholder["removed"],
+                    "token_delta": int(current_item["token_counts"].get("total", 0)) - int(prev_item["token_counts"].get("total", 0)),
                 }
             )
 
@@ -236,6 +266,55 @@ class PromptEfficiencyAnalyzer:
             "context_drift_max": drift_stats["max"],
             "encoding": self.encoding_name,
         }
+
+        qualities = [item.get("quality", {}) for item in prompts_section if isinstance(item.get("quality"), dict)]
+        if qualities:
+            summary["avg_constraint_strictness"] = round(
+                sum(float(item.get("constraint_strictness", 0.0)) for item in qualities) / len(qualities), 4
+            )
+            summary["avg_ambiguity"] = round(sum(float(item.get("ambiguity", 0.0)) for item in qualities) / len(qualities), 4)
+            summary["avg_output_schema_compliance"] = round(
+                sum(float(item.get("output_schema_compliance", 0.0)) for item in qualities) / len(qualities), 4
+            )
+            summary["avg_redundancy"] = round(sum(float(item.get("redundancy", 0.0)) for item in qualities) / len(qualities), 4)
+            summary["avg_readability_difficulty"] = round(
+                sum(float(item.get("readability_difficulty", 0.0)) for item in qualities) / len(qualities), 4
+            )
+            summary["max_instruction_conflict_risk"] = round(
+                max(float(item.get("instruction_conflict_risk", 0.0)) for item in qualities), 4
+            )
+            summary["max_injection_surface_score"] = round(
+                max(float(item.get("injection_surface_score", 0.0)) for item in qualities), 4
+            )
+            summary["avg_placeholder_count"] = round(
+                sum(float(item.get("placeholder_count", 0.0)) for item in qualities) / len(qualities), 2
+            )
+            token_budget_values = [
+                item.get("token_budget", {}) for item in qualities if isinstance(item.get("token_budget"), dict)
+            ]
+            if token_budget_values:
+                summary["min_token_budget_safety_ratio"] = round(
+                    min(float(item.get("safety_ratio", 0.0)) for item in token_budget_values), 4
+                )
+                summary["context_window_tokens"] = int(token_budget_values[0].get("context_window_tokens", 0))
+
+        if transitions:
+            summary["avg_placeholder_stability"] = round(
+                sum(float(item.get("placeholder_stability", 0.0)) for item in transitions) / len(transitions), 4
+            )
+            per_segment: dict[str, list[float]] = {}
+            for item in transitions:
+                segment_values = item.get("segment_volatility", {})
+                if not isinstance(segment_values, Mapping):
+                    continue
+                for key, value in segment_values.items():
+                    per_segment.setdefault(str(key), []).append(float(value))
+            summary["avg_segment_volatility"] = {
+                key: round(sum(values) / len(values), 4) for key, values in per_segment.items() if values
+            }
+        else:
+            summary["avg_placeholder_stability"] = 1.0
+            summary["avg_segment_volatility"] = {}
 
         result: dict[str, object] = {
             "summary": summary,

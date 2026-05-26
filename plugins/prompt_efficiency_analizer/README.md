@@ -1,249 +1,232 @@
 ## Prompt Efficiency Analyzer
 
-PromptMan includes a built‑in **Prompt Efficiency Analyzer** designed to measure the stability, predictability, and cache‑friendliness of prompt versions.  
-The analyzer works **locally**, does not call any LLMs, and requires no external services.  
-It evaluates prompt efficiency across several key metrics.
+PromptMan includes a local deterministic Prompt Efficiency Analyzer for prompt-version quality diagnostics.
+The analyzer does not call LLMs and does not require heavyweight ML dependencies.
+
+Code is the source of truth:
+
+- `prompt_efficiency_analizer/analyzer.py`
+- `prompt_efficiency_analizer/quality_metrics.py`
+- `prompt_efficiency_analizer/similarity.py`
+- `prompt_efficiency_analizer/cache_estimator.py`
+- `prompt_efficiency_analizer/drift.py`
+- `prompt_efficiency_analizer/report.py`
 
 ---
 
-### Overview
+## What It Analyzes
 
-The analyzer compares multiple versions of a prompt within the same `project/name` and computes:
+For a sequence of versions (`v1 -> v2 -> v3 -> ...`), the analyzer computes:
 
-- structural stability of the prompt  
-- probability of hitting the LLM cache  
-- degree of change in the dynamic context  
-- textual and token‑level similarity between versions  
-- transition quality between versions (v1 → v2 → v3 …)
-
-The output includes aggregated metrics and a transition table.
-
----
-
-### How it works (Diagram)
-
-```
-┌──────────────────────────┐
-│  Prompt Versions (v1..vn)│
-└──────────────┬───────────┘
-               │
-               ▼
-┌────────────────────┐
-│  Segmentation      │
-│  (Role/Task/...)   │
-└──────────┬─────────┘
-           │
-           ▼
-┌──────────────────────────────┐
-│ Token Counter (tiktoken)     │
-└───────────┬──────────────────┘
-            │
-            ▼
-┌────────────────────────────────────────┐
-│ Similarity Engine (Jaro/Jaccard Hybrid)│
-└──────────────────┬─────────────────────┘
-                   │
-                   ▼
-┌───────────────────────────────────────┐
-│ Cache Hit Estimator (static vs total) │
-└──────────────────┬────────────────────┘
-                   │
-                   ▼
-┌────────────────────────────┐
-│ Context Drift Calculator   │
-└──────────────┬─────────────┘
-               │
-               ▼
-┌──────────────────────────┐
-│  Final Efficiency Report │
-└──────────────────────────┘
-```
-
-### Internal Algorythm Flowchart
-
-```
-┌───────────────────────────────┐
-│   Input: Prompt Versions      │
-│   (v1, v2, v3, ..., vn)       │
-└───────────────┬───────────────┘
-                │
-                ▼
-┌────────────────────────────────┐
-│ 1. Segmentation                │
-│    - Role                      │
-│    - Task                      │
-│    - Context                   │
-│    - Constraints               │
-│    - Output Format             │
-└────────────────┬───────────────┘
-                 │
-                 ▼
-┌────────────────────────────────┐
-│ 2. Token Counting (tiktoken)   │
-│    - static_tokens             │
-│    - dynamic_tokens            │
-│    - total_tokens              │
-└────────────────┬───────────────┘
-                 │
-                 ▼
-┌──────────────────────────────────────────┐
-│ 3. Similarity Engine                     │
-│    - Jaro-Winkler                        │
-│    - Jaccard (token-level)               │
-│    - Hybrid similarity                   │
-└──────────────────────┬───────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────┐
-│ 4. Cache Hit Estimator                   │
-│    cache_hit = static_tokens / total     │
-└──────────────────────┬───────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────┐
-│ 5. Context Drift Calculator              │
-│    drift = 1 - similarity(contexts)      │
-└──────────────────────┬───────────────────┘
-                       │
-                       ▼
-┌────────────────────────────────┐
-│ 6. Aggregation & Reporting     │
-│    - PSI                       │
-│    - Avg Cache Hit Score       │
-│    - Avg Hybrid Similarity     │
-│    - Mean Context Drift        │
-│    - Transition Table          │
-└────────────────────────────────┘
-```
+1. Similarity between adjacent versions.
+2. Cache hit estimate between adjacent versions.
+3. Context drift between adjacent versions.
+4. Segment-level volatility between adjacent versions.
+5. Placeholder stability (added/removed variables) between adjacent versions.
+6. Prompt-level quality metrics per version.
+7. Aggregated summary metrics across the whole chain.
 
 ---
 
-## Metrics
+## Input Segments
 
-Below are all metrics produced by the analyzer, including interpretation and recommended value ranges.
+Prompts are normalized into canonical segments:
 
----
-
-### **PSI — Prompt Stability Index**
-
-**Definition:**  
-Percentage of static tokens in the prompt (Role, Task, Constraints, Output Format) relative to the total number of tokens.
-
-**Formula:**  
-`PSI = (static_tokens / total_tokens) * 100`
-
-**Interpretation:**
-
-| PSI Range | Meaning |
-|----------|---------|
-| **90–100%** | 🟢 Excellent — the prompt is highly stable; cache efficiency is maximal |
-| **75–89%** | 🟡 Good — structure is mostly stable with minor changes |
-| **50–74%** | 🟠 Moderate — prompt changes significantly between versions |
-| **< 50%** | 🔴 Poor — prompt is unstable; cache reuse is minimal |
+- `role`
+- `task`
+- `constraints`
+- `output_format`
+- `examples`
+- `context`
 
 ---
 
-### **Cache Hit Score**
+## Core Formulas (Actual Implementation)
 
-**Definition:**  
-Estimated probability that the prompt will hit the LLM cache.  
-Represents the ratio of static tokens to total tokens.
+### Similarity
 
-**Formula:**  
-`cache_hit_score = static_tokens / total_tokens`
+The analyzer uses three lexical similarities and one weighted hybrid:
 
-**Interpretation:**
+- `levenshtein = Levenshtein.normalized_similarity(left, right)`
+- `jaro_winkler = JaroWinkler.normalized_similarity(left, right)`
+- `jaccard = Jaccard(token_set(left), token_set(right))`
+- `hybrid = 0.45 * levenshtein + 0.35 * jaro_winkler + 0.20 * jaccard`
 
-| Score Range | Meaning |
-|-------------|---------|
-| **0.85–1.0** | 🟢 Excellent — cache will be reused almost every time |
-| **0.70–0.84** | 🟡 Good — cache reuse is decent |
-| **0.50–0.69** | 🟠 Moderate — cache reuse is inconsistent |
-| **< 0.50** | 🔴 Poor — cache is rarely effective |
+### Cache Hit Score
 
----
+Cache estimate is weighted by segment stability (not token ratio):
 
-### **Hybrid Similarity**
+1. For static segments (`role`, `task`, `constraints`, `output_format`, `examples`) compute average hybrid similarity `static_score`.
+2. Compute context hybrid similarity `context_score`.
+3. `weighted = 0.78 * static_score + 0.22 * context_score`.
+4. If `context_score < 0.40`, apply penalty: `weighted = weighted * 0.85`.
+5. Clamp result to `[0, 1]`.
 
-**Definition:**  
-A combined similarity metric using:
+### Context Drift
 
-- Jaro‑Winkler similarity (character‑level)
-- Jaccard similarity (token‑level)
+Context drift uses set symmetric difference on lowercase words:
 
-**Formula:**  
-`hybrid = 0.5 * jaro_winkler + 0.5 * jaccard`
+- `drift = |words(prev) XOR words(curr)| / |words(prev) UNION words(curr)|`
 
-**Interpretation:**
+### PSI (Prompt Stability Index)
 
-| Hybrid Range | Meaning |
-|--------------|---------|
-| **0.85–1.0** | 🟢 Excellent — versions are nearly identical |
-| **0.70–0.84** | 🟡 Good — changes are small and localized |
-| **0.40–0.69** | 🟠 Moderate — prompt structure changes noticeably |
-| **< 0.40** | 🔴 Poor — versions differ significantly |
+PSI is computed from aggregated chain metrics:
+
+- `mean_similarity = average(pairwise_hybrid)`
+- `mean_cache = average(cache_hit_scores)`
+- `drift_component = 1 - clamp(context_drift_mean, 0, 1)`
+- `psi_raw = 0.45 * mean_similarity + 0.35 * mean_cache + 0.20 * drift_component`
+- `psi = clamp(psi_raw, 0, 1) * 100`
 
 ---
 
-### **Context Drift**
+## Additional Prompt-Level Metrics
 
-**Definition:**  
-Measures how much the **context section only** has changed between versions.
+Each prompt version now includes a `quality` block with:
 
-**Formula:**  
-`drift = 1 - similarity(context_v1, context_v2)`
+1. `constraint_strictness`
+Definition: density of strict directives (`must`, `must not`, `always`, `never`, `exactly`, etc.).
 
-**Interpretation:**
+2. `ambiguity`
+Definition: density of ambiguous wording (`maybe`, `perhaps`, `approximately`, `etc`, etc.).
 
-| Drift Range | Meaning |
-|-------------|---------|
-| **0.00–0.05** | 🟢 Excellent — context is stable |
-| **0.06–0.20** | 🟡 Moderate — context changes but remains predictable |
-| **0.21–0.50** | 🟠 Poor — context is unstable |
-| **> 0.50** | 🔴 Very poor — context changes completely |
+3. `output_schema_compliance`
+Definition: heuristic score from explicit schema/format keywords and structural cues (JSON-like keys, markdown headings, code fences, table pipes, enumerations).
+
+4. `redundancy`
+Definition: lexical repetition score from unique-token ratio and repeated bigrams.
+
+5. `instruction_conflict_risk` and `instruction_conflicts`
+Definition: conflict risk from contradictory phrase pairs (`must` vs `must not`, `always` vs `never`, etc.) and competing `exactly N` constraints.
+
+6. `injection_surface_score` and `injection_matched_patterns`
+Definition: heuristic detection of risky prompt-injection markers in context/examples.
+
+7. `readability_difficulty`
+Definition: parser/readability difficulty from sentence length, symbol density, and structural nesting signals.
+
+8. `placeholder_count` and `placeholders`
+Definition: extracted variable placeholders from patterns such as `{x}`, `{{x}}`, `<x>`, `$x`, `%%x%%`.
+
+9. `token_budget`
+Definition: context-window safety metrics:
+`context_window_tokens`, `total_tokens`, `remaining_tokens`, `usage_ratio`, `safety_ratio`, `is_over_budget`.
+
+Default context windows by encoding:
+
+- `cl100k_base`: 128000
+- `o200k_base`: 200000
+- `p50k_base`: 8192
+- `r50k_base`: 4096
 
 ---
 
-### **Prompt Transitions**
+## Additional Transition Metrics
 
-The analyzer builds a transition table:
+Each transition (`vN -> vN+1`) includes:
 
-`v1 -> v2 -> v3 -> …`
+1. `segment_volatility`
+Per-segment change score:
+`segment_volatility[segment] = 1 - hybrid_similarity(segment_prev, segment_curr)`.
 
+2. `placeholder_stability`
+Stability of placeholder set between versions.
 
-For each transition it computes:
+3. `placeholder_added` / `placeholder_removed`
+Which placeholders were introduced/removed.
 
-- Hybrid Similarity  
-- Cache Hit Score  
-- Context Drift  
-
-This helps visualize how safely and predictably prompts evolve over time.
+4. `token_delta`
+`current_total_tokens - previous_total_tokens`.
 
 ---
 
-## Example Output
-``` text
-Prompt Efficiency Report
-Source: promptman_versions
-Prompt count: 2
-PSI: 91.83
-Avg cache hit score: 0.902
-Avg similarity (hybrid): 0.8946
-Mean context drift: 0.0
+## Summary Fields
+
+`summary` now includes base metrics plus aggregated quality metrics:
+
+- `source`
+- `prompt_count`
+- `psi`
+- `avg_cache_hit_score`
+- `avg_hybrid_similarity`
+- `context_drift_mean`
+- `context_drift_max`
+- `encoding`
+- `avg_constraint_strictness`
+- `avg_ambiguity`
+- `avg_output_schema_compliance`
+- `avg_redundancy`
+- `avg_readability_difficulty`
+- `max_instruction_conflict_risk`
+- `max_injection_surface_score`
+- `avg_placeholder_count`
+- `min_token_budget_safety_ratio`
+- `context_window_tokens`
+- `avg_placeholder_stability`
+- `avg_segment_volatility`
+
+---
+
+## Reports
+
+The analyzer returns both:
+
+1. `markdown_report`
+2. `rich_report`
+
+Reports include extended summary metrics and transition details.
+
+---
+
+## Dependencies
+
+Current lightweight dependency set:
+
+- `tiktoken`
+- `rapidfuzz`
+- `requests`
+- `rich`
+
+No `torch`, `transformers`, `spacy`, or other heavyweight ML stacks are required.
+
+---
+
+## Quick Usage
+
+```python
+from prompt_efficiency_analizer import PromptEfficiencyAnalyzer
+
+analyzer = PromptEfficiencyAnalyzer(encoding_name="cl100k_base")
+result = analyzer.analyze_prompt_chain(
+    [
+        {
+            "label": "v1",
+            "role": "assistant",
+            "task": "Summarize ticket {ticket_id}",
+            "constraints": "Must use exactly 3 bullets",
+            "output_format": "JSON with keys: summary, actions",
+            "context": "Support issue details",
+            "examples": "Input: ... Output: ...",
+        },
+        {
+            "label": "v2",
+            "role": "assistant",
+            "task": "Summarize ticket {ticket_id} and provide action plan",
+            "constraints": "Must use exactly 3 bullets",
+            "output_format": "JSON with keys: summary, actions, risk",
+            "context": "Support issue details with escalation notes",
+            "examples": "Input: ... Output: ...",
+        },
+    ]
+)
+
+print(result["summary"])
+print(result["markdown_report"])
 ```
 
-**Interpretation:**
-
-- PSI 91.83 → 🟢 excellent stability  
-- Cache 0.902 → 🟢 cache reuse is nearly perfect  
-- Hybrid 0.8946 → 🟢 versions are highly similar  
-- Drift 0.0 → 🟢 context did not change at all  
-
 ---
 
-## Where These Metrics Are Used
+## Notes
 
-- Prompt version comparison UI  
-- API endpoint: `/v1/prompts/{project}/{name}/efficiency`  
-- CI/CD quality gates for prompt evolution  
-- Prompt rewrite optimization tools  
+1. Metric values are heuristic and intended for prompt quality monitoring, regression detection, and CI quality gates.
+2. Because the analysis is deterministic and local, results are stable and reproducible for the same input.

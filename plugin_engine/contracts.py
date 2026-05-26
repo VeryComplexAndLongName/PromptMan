@@ -167,11 +167,37 @@ class PluginDiagnosticsOut(BaseModel):
     hook_diagnostics: list[PluginHookDiagnosticEntry] = Field(default_factory=list)
 
 
+class PluginModalChartPoint(BaseModel):
+    label: str
+    value: float
+
+
+class PluginModalChartSpec(BaseModel):
+    id: str
+    title: str
+    tooltip: str = ""
+    kind: Literal["bar", "line"] = "line"
+    points: list[PluginModalChartPoint] = Field(default_factory=list)
+    value_min: float | None = None
+    value_max: float | None = None
+    y_label: str = ""
+
+
+class PluginModalTabSpec(BaseModel):
+    id: str
+    label: str
+    body_markdown: str = ""
+    controls: list[PluginUiControl] = Field(default_factory=list)
+    charts: list[PluginModalChartSpec] = Field(default_factory=list)
+
+
 class PluginModalSpec(BaseModel):
     title: str
     description: str = ""
     body_markdown: str = ""
     controls: list[PluginUiControl] = Field(default_factory=list)
+    tabs: list[PluginModalTabSpec] = Field(default_factory=list)
+    active_tab: str | None = None
     allow_stop: bool = True
     stop_label: str = "Stop Plugin"
     close_label: str = "Close"
