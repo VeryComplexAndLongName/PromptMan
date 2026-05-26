@@ -2874,6 +2874,9 @@ createApp({
             <div class="chips plugin-state-chips">
               <span class="chip">{{ plugin.state }}</span>
               <span class="chip" v-if="plugin.available">available</span>
+              <span class="chip" v-if="plugin.signature_status === 'verified'">signed</span>
+              <span class="chip chip-warn" v-else-if="plugin.signature_status === 'unsigned'">unsigned</span>
+              <span class="chip chip-err" v-else-if="plugin.signature_status">signature invalid</span>
               <span class="chip" v-if="!plugin.compatible">incompatible</span>
               <span class="chip chip-warn" v-if="getPluginFailureCount(plugin.name) > 0">failures: {{ getPluginFailureCount(plugin.name) }}</span>
               <span class="chip chip-err" v-if="getPluginBlockedCount(plugin.name) > 0">blocked: {{ getPluginBlockedCount(plugin.name) }}</span>

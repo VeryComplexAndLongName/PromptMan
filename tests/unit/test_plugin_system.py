@@ -1,13 +1,67 @@
 import asyncio
+import base64
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import app_settings
 from plugin_engine import PluginEngine, PluginModalControlUpdateRequest, PluginModalStartRequest
-from plugins.sign_plugin import generate_keypair, sign_plugin
+
+
+def _generate_signing_material(signer_id: str, output_dir: Path) -> Path:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_b64 = base64.b64encode(
+        public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("utf-8")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    private_key_path = output_dir / f"{signer_id}.ed25519.private.pem"
+    private_key_path.write_bytes(private_pem)
+    (output_dir / f"{signer_id}.trusted-signer.json").write_text(
+        json.dumps(
+            {
+                signer_id: {
+                    "algorithm": "ed25519",
+                    "public_key": public_b64,
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return private_key_path
+
+
+def _sign_plugin_file(plugin_path: Path, signer_id: str, private_key_path: Path) -> None:
+    private_key = serialization.load_pem_private_key(private_key_path.read_bytes(), password=None)
+    signature = private_key.sign(plugin_path.read_bytes())
+    plugin_path.with_suffix(".signature.json").write_text(
+        json.dumps(
+            {
+                "signer_id": signer_id,
+                "algorithm": "ed25519",
+                "file": plugin_path.name,
+                "signature": base64.b64encode(signature).decode("utf-8"),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_plugin_catalog_lists_example_plugins(client):  # type: ignore[no-untyped-def]
@@ -116,10 +170,10 @@ def test_plugin_catalog_reports_verified_signature(tmp_path: Path):  # type: ign
     )
 
     keys_dir = plugin_dir / "keys"
-    generate_keypair("test-signer", keys_dir)
+    private_key_path = _generate_signing_material("test-signer", keys_dir)
     trust_snippet = (keys_dir / "test-signer.trusted-signer.json").read_text(encoding="utf-8")
     (plugin_dir / "trusted_signers.json").write_text(trust_snippet, encoding="utf-8")
-    sign_plugin(plugin_path, "test-signer", keys_dir / "test-signer.ed25519.private.pem")
+    _sign_plugin_file(plugin_path, "test-signer", private_key_path)
 
     app = FastAPI()
     engine = PluginEngine(app, plugins_dir=plugin_dir, app_version="1.0.0")

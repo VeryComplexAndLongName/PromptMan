@@ -273,6 +273,9 @@ PromptMan supports extenable plugin system (EPS). Repository already contains a 
 
 In `plugins/` you can find `README.md` with plugin types description, instruction on how to create your own plugins, sign and integration plugins. In `plugins/examples/` You can see pluginf of all three types.
 
+For plugin signing, PromptMan now uses external PromptManSign service. A convenience helper `plugins/sign_via_service.py` uploads plugin files as multipart form data and writes detached `.signature.json` sidecars locally.
+For a minimal team cheat sheet, use `plugins/SIGNING_QUICKSTART.md`.
+
 PromptMan includes a built‑in **Prompt Efficiency Analyzer** plugin designed to measure the stability, predictability, and cache‑friendliness of prompt versions.  
 The analyzer works **locally**, does not call any LLMs, and requires no external services.  
 It evaluates prompt efficiency across several key metrics. It locates in `plugins/` folder
@@ -552,6 +555,10 @@ For higher load, multi-instance deployments, or production environments, switch 
 
 ### Horizontal Scaling With PostgreSQL
 
+SQLite is not a good fit for horizontal scaling because the data lives in a single local file, so multiple app instances cannot safely share it. For any multi-instance or load-balanced setup, use PostgreSQL as the shared database.
+
+If you want to add an external cache layer, you can use Redis or Cornet. In that case, disable the built-in in-memory cache with `PROMPTMAN_CACHE_ENABLED=false` so only the external cache is used.
+
 ```
                         ┌─────────────────────────────────────┐
                         │           Load Balancer             │
@@ -574,6 +581,11 @@ For higher load, multi-instance deployments, or production environments, switch 
 
 SQLite is a single-file database accessed by one process at a time — horizontal scaling with SQLite is not possible.
 PostgreSQL is a network database that all instances connect to simultaneously.
+
+Examples of scaling behind a Load Balancer:
+
+- Two PromptMan instances behind nginx or Traefik, both connected to the same PostgreSQL database.
+- Three or more PromptMan instances behind AWS ALB, Azure Load Balancer, or another L7/L4 balancer, with PostgreSQL as the shared state store.
 
 Important: if you use SQLite, run the app with a single worker (`--workers 1`) regardless of CPU count. SQLite is fine for local or single-process deployments, but multiple workers create separate in-memory caches and contend for the same database file.
 

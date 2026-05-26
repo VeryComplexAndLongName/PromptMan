@@ -178,6 +178,11 @@ def serve_app_icon_new() -> FileResponse:
     return FileResponse("P_240x240.png")
 
 
+@app.get("/plugins/efficiency_analizer_ui/prompt_eficiency_analizer.png", include_in_schema=False)
+def serve_prompt_efficiency_analyzer_icon() -> FileResponse:
+    return FileResponse("plugins/efficiency_analizer_ui/prompt_eficiency_analizer.png")
+
+
 @app.post(f"{API_V1}/auth/bootstrap-admin", response_model=AuthResponse)
 def bootstrap_admin(data: UserBootstrap, db=Depends(get_db)) -> AuthResponse:  # type: ignore[no-untyped-def]
     return bootstrap_admin_route(data, db)
