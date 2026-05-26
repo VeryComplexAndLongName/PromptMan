@@ -442,7 +442,9 @@ class PluginEngine:
         return self._modal_session_to_out(session)
 
     async def close_modal_session(self, plugin_name: str, session_id: str) -> PluginActionResult:
-        session = self._get_modal_session_record(plugin_name, session_id)
+        session = self.modal_sessions.get(session_id)
+        if session is None or session.plugin_name != plugin_name:
+            return PluginActionResult(message="Modal session already closed", plugin_name=plugin_name, state="stopped")
         if not session.stop_requested and session.state not in {"stopped", "completed", "error"}:
             session.stop_requested = True
             session.state = "stopped"

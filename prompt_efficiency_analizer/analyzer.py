@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import requests
 
@@ -117,7 +118,11 @@ class PromptEfficiencyAnalyzer:
             headers["Authorization"] = f"Bearer {access_token.strip()}"
 
         list_url = f"{base}/v1/prompts/{project}/{prompt_name}/versions"
-        response = requests.get(list_url, headers=headers, timeout=self.request_timeout_seconds, verify=verify_tls)
+        session = requests.Session()
+        hostname = urlparse(base).hostname or ""
+        if hostname in {"localhost", "127.0.0.1", "::1"}:
+            session.trust_env = False
+        response = session.get(list_url, headers=headers, timeout=self.request_timeout_seconds, verify=verify_tls)
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, list):

@@ -215,6 +215,7 @@ createApp({
     const pluginModalSession = ref(null);
     const pluginModalPluginName = ref("");
     const pluginModalEndpointName = ref("");
+    const pluginModalBackdropArmed = ref(false);
     const pluginNameFilter = ref("");
     const pluginTagFilters = ref([]);
     const pluginTagMatchMode = ref(normalizePluginTagMatchMode(window.localStorage.getItem(PLUGIN_TAG_MATCH_MODE_STORAGE_KEY)));
@@ -917,6 +918,7 @@ createApp({
 
     const openPluginModal = async (plugin, endpointName) => {
       if (!plugin?.name || !endpointName) return;
+      pluginModalBackdropArmed.value = false;
       pluginModalLoading.value = true;
       pluginModalError.value = "";
       pluginModalStatus.value = "Opening modal...";
@@ -1005,12 +1007,13 @@ createApp({
     };
 
     const closePluginModal = async (removeRemote = true) => {
+      pluginModalBackdropArmed.value = false;
       if (removeRemote && pluginModalSession.value?.session_id && pluginModalPluginName.value) {
         const res = await apiFetch(
           `/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}`,
           { method: "DELETE" }
         );
-        if (!res.ok) {
+        if (!res.ok && res.status !== 404) {
           pluginModalError.value = `Failed to close modal (${res.status})`;
           return;
         }
@@ -1022,6 +1025,18 @@ createApp({
       pluginModalSession.value = null;
       pluginModalPluginName.value = "";
       pluginModalEndpointName.value = "";
+    };
+
+    const handlePluginModalBackdropPointerDown = () => {
+      pluginModalBackdropArmed.value = true;
+    };
+
+    const handlePluginModalBackdropClick = () => {
+      if (!pluginModalBackdropArmed.value) {
+        return;
+      }
+      pluginModalBackdropArmed.value = false;
+      void closePluginModal(false);
     };
 
     const getPluginDiagnosticsSummary = (pluginName) => {
@@ -3154,7 +3169,12 @@ createApp({
       </div>
     </div>
 
-    <div class="modal-backdrop" v-if="pluginModalOpen" @click.self="closePluginModal(false)">
+    <div
+      class="modal-backdrop"
+      v-if="pluginModalOpen"
+      @pointerdown.self="handlePluginModalBackdropPointerDown"
+      @click.self="handlePluginModalBackdropClick"
+    >
       <div class="modal-card">
         <div class="modal-header">
           <div>
