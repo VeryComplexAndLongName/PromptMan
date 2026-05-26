@@ -1,0 +1,8 @@
+# Optional dependencies for Prompt Efficiency Analyzer module and plugin.
+# Install separately when you need analyzer functionality:
+#   pip install -r prompt_efficiency_analizer/requirements.txt
+
+requests>=2.33.1
+tiktoken>=0.8.0
+rapidfuzz>=3.14.0
+rich>=14.0.0
