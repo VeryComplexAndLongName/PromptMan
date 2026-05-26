@@ -408,7 +408,7 @@ def plugin_preinit() -> PluginManifest:
         name="efficiency_analizer_ui",
         version="1.0.0",
         description="Modal workbench for deterministic prompt efficiency analysis.",
-        icon="/P_240x240.png",
+        icon="/plugins/efficiency_analizer_ui/prompt_eficiency_analizer.png",
         min_promptman_version="0.0.0",
         endpoints=[
             PluginEndpointConfig(name="open_workbench", description="Open Prompt Efficiency Analyzer modal", roles=["admin", "developer", "viewer"], launches_modal=True),

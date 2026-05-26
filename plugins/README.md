@@ -199,22 +199,44 @@ Example `plugins/my_plugin.signature.json`:
 }
 ```
 
-### Helper script
+### Signing workflow
 
-PromptMan includes a small helper script:
+PromptMan verifies detached signatures but does not generate them locally anymore.
+
+Generate signatures outside PromptMan, for example with the dedicated PromptManSign service, and then place only these artifacts into `plugins/`:
+
+1. the plugin file
+2. the detached `.signature.json` sidecar
+3. the trusted signer public key entry in `trusted_signers.json`
+
+Do not store signing private keys inside the PromptMan repository or deployment.
+
+### Simple file-based signing helper
+
+PromptMan includes a transport helper for calling PromptManSign without embedding full file text into JSON.
+
+Use:
 
 ```text
-python plugins/sign_plugin.py generate-key <signer_id>
-python plugins/sign_plugin.py sign plugins/my_plugin.py <signer_id> plugins/keys/<signer_id>.ed25519.private.pem
+python plugins/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --signer-id promptman-team
 ```
 
-The first command generates:
+What it does:
 
-1. private key PEM
-2. public key PEM
-3. trust-store snippet JSON
+1. Calls `POST /v1/promptman/init` with login and password
+2. Reads `access_token` and window token from response
+3. Uploads plugin file as `multipart/form-data` to `POST /v1/promptman/sign`
+4. Writes `plugins/my_plugin.signature.json`
 
-The second command creates `<plugin_name>.signature.json`.
+Optional trusted signer merge:
+
+```text
+python plugins/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --trusted-signer-json /path/to/promptman-team.trusted-signer.json
+```
+
+With `--trusted-signer-json`, the helper also merges signer record into `plugins/trusted_signers.json`.
+
+Quick reference with only two commands: `plugins/SIGNING_QUICKSTART.md`.
 
 ## Role-based access
 
@@ -258,4 +280,4 @@ See:
 
 1. `plugins/example_ui_plugin.py`
 2. `plugins/example_headless_plugin.py`
-3. `plugins/sign_plugin.py`
+3. PromptManSign external signing service
