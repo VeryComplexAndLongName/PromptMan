@@ -2,21 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import importlib.util
 import inspect
-from datetime import UTC, datetime
+import json
 import re
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-from types import ModuleType
+from datetime import UTC, datetime
+from pathlib import Path  # noqa: TC003
+from types import ModuleType  # noqa: TC003
 from typing import Any
 from uuid import uuid4
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from fastapi import Depends
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
@@ -224,7 +223,7 @@ class PluginEngine:
         if record.lifecycle_active and record.module and hasattr(record.module, "plugin_done"):
             try:
                 await self._call_with_timeout(
-                    getattr(record.module, "plugin_done"),
+                    record.module.plugin_done,
                     PluginLifecycleContext(self.app, self, record.name, record.manifest, dict(record.init_results)),
                     timeout_seconds=record.manifest.lifecycle_timeout_seconds,
                 )
@@ -303,7 +302,7 @@ class PluginEngine:
             if not record.module or not hasattr(record.module, "plugin_run"):
                 raise RuntimeError("plugin_run is not available")
             result = await self._call_with_timeout(
-                getattr(record.module, "plugin_run"),
+                record.module.plugin_run,
                 run_context,
                 timeout_seconds=timeout_seconds,
             )
@@ -734,7 +733,7 @@ class PluginEngine:
     async def _run_record_startup(self, record: PluginRecord, *, payload_source: str) -> None:
         lifecycle_context = PluginLifecycleContext(self.app, self, record.name, record.manifest, record.init_results)
         await self._call_with_timeout(
-            getattr(record.module, "plugin_init"),
+            record.module.plugin_init,
             lifecycle_context,
             timeout_seconds=record.manifest.lifecycle_timeout_seconds,
         )
@@ -757,7 +756,7 @@ class PluginEngine:
                 logger.warning("plugins.init_endpoint.failed plugin={} endpoint={} error={}", record.name, init_name, exc)
                 record.init_results[init_name] = {"ok": False, "error": str(exc)}
         await self._call_with_timeout(
-            getattr(record.module, "plugin_postinit"),
+            record.module.plugin_postinit,
             lifecycle_context,
             timeout_seconds=record.manifest.lifecycle_timeout_seconds,
         )
@@ -970,7 +969,7 @@ class PluginEngine:
         if record.lifecycle_active and record.module and hasattr(record.module, "plugin_done"):
             try:
                 await self._call_with_timeout(
-                    getattr(record.module, "plugin_done"),
+                    record.module.plugin_done,
                     PluginLifecycleContext(self.app, self, record.name, record.manifest, dict(record.init_results)),
                     timeout_seconds=record.manifest.lifecycle_timeout_seconds,
                 )

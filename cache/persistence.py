@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from typing import Any
-
-import app_settings
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
 
-from cache.shared_cache import PROMPT_CACHE_PREFIX, PROMPT_CACHE_TTL_SECONDS, get_hot_prompt_cache_entries, set_shared_cache_entry
+import app_settings
+from cache.shared_cache import (
+    PROMPT_CACHE_PREFIX,
+    PROMPT_CACHE_TTL_SECONDS,
+    get_hot_prompt_cache_entries,
+    set_shared_cache_entry,
+)
 from models import CacheRequest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from sqlalchemy.orm import Session
 
 _MAX_LRU_VALUE = 2**63 - 1
 _DEFAULT_PERSIST_LIMIT = 100
