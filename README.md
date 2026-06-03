@@ -2,8 +2,14 @@
 
 PromptMan is a FastAPI application with a conversation-first API, RBAC, plugin support, and pluggable runtime caching.
 
+![PromptMan](screen2.png)
+
 The current product surface is focused on conversation threads and messages.
-Legacy prompt/optimize endpoints are removed.
+Prompt chain versioning, analysis, and orchestration are part of the active API/UI.
+
+![Screenshot 1](1.png)
+![Screenshot 2](2.png)
+![Screenshot 3](3.png)
 
 ## Key Capabilities
 
@@ -11,6 +17,10 @@ Legacy prompt/optimize endpoints are removed.
 - Message append and message history listing.
 - Conversation import from JSON and plain text chain formats.
 - Thread-level lightweight analysis (message counts and content stats).
+- Prompt chain versioning with chain-level and version-level analysis.
+- Prompt Orchestrator preview with dual mode execution: try configured live LLM, fallback to heuristic output when unavailable.
+- Prompt version test-runs with RAG enrichment and non-failing LLM fallback mode.
+- Security metrics with RU/EN marker detection (`injection_risk`, `contradiction_risk`, `ambiguity_risk`) and marker logs.
 - RBAC (`admin`, `developer`, `viewer`) with project-level access assignment.
 - Runtime config management through admin endpoints.
 - Pluggable runtime cache backends: `memory`, `redis`, `garnet`, `none`.
@@ -124,6 +134,7 @@ Then sign in:
 - `POST /v1/prompt-versions/chains/{chain_id}/versions`
 - `POST /v1/prompt-versions/chains/{chain_id}/analyze`
 - `POST /v1/prompt-versions/chains/{chain_id}/versions/{version_no}/analyze`
+- `POST /v1/prompt-versions/chains/{chain_id}/versions/{version_no}/orchestrate`
 - `POST /v1/prompt-versions/chains/{chain_id}/versions/{version_no}/test-runs`
 - `GET /v1/prompt-versions/chains/{chain_id}/versions/{version_no}/test-runs`
 - `GET /v1/prompt-versions/test-runs`
@@ -186,11 +197,29 @@ Managed via `app_settings` and admin config API:
 - `TEST_RAG_SOURCE_PATH`
 - `TEST_RAG_TOP_K`
 
+### Optimizer / Compression LLM Keys
+
+Managed via `app_settings` and admin config API:
+
+- `OPTIMIZER_PROVIDER`
+- `OPTIMIZER_MODEL`
+- `OPTIMIZER_BASE_URL`
+- `OPTIMIZER_API_TOKEN`
+- `OPTIMIZER_BACKEND`
+- `OPTIMIZER_TIMEOUT_SECONDS`
+- `PROMPT_COMPRESSION_PROVIDER`
+- `PROMPT_COMPRESSION_MODEL`
+- `PROMPT_COMPRESSION_BASE_URL`
+- `PROMPT_COMPRESSION_API_TOKEN`
+- `PROMPT_COMPRESSION_BACKEND`
+
 Notes:
 
 - `TEST_LLM_*` are used by prompt-version simulation test runs.
 - If `TEST_LLM_USE_OPTIMIZER_FALLBACK=true`, missing test LLM fields fall back to `OPTIMIZER_*`.
 - RAG chunks are loaded from `TEST_RAG_SOURCE_PATH` and appended to the test prompt when enabled.
+- Prompt Orchestrator preview uses dedicated profiles for optimizer/compression and falls back to heuristic output if live invocation is unavailable.
+- The UI displays explicit Optimizer/Compression mode badges (`LIVE`, `FALLBACK`, `UNKNOWN`) in Prompt Orchestrator preview.
 
 ## Simulation Testing (Logs + RAG + Security)
 
@@ -218,6 +247,24 @@ Direct seed command (without simulation):
 .\.venv\Scripts\python.exe .\scripts\seed_demo_data.py --reset-db --scale small
 ```
 
+Generate Russian-only synthetic data:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\seed_demo_data.py --reset-db --scale medium --lang-ru
+```
+
+Generate English-only synthetic data:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\seed_demo_data.py --reset-db --scale medium --lang-en
+```
+
+Generate mixed RU/EN synthetic data:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\seed_demo_data.py --reset-db --scale medium --lang-mix
+```
+
 More varied demo data for analysis-heavy runs:
 
 ```powershell
@@ -228,6 +275,16 @@ The seeded demo set is intentionally mixed:
 
 - threads have different lengths, and most are longer than a simple 2-question / 2-answer exchange
 - prompt versions are written to produce different analysis signals, including tokens, reliability, cacheability, and selected security markers
+- synthetic thread messages and chain versions periodically include deterministic threat snippets (injection/contradiction/ambiguity) for benchmark-style security checks
+
+## UI Notes
+
+- Prompt versions metrics table includes full risk and delta columns:
+  - `Version`, `Tokens`, `Reliability`, `Cache hit %`
+  - `Injection risk`, `Contradiction risk`, `Ambiguity risk`
+  - `Delta tokens`, `Delta reliability`, `Delta cache %`
+  - `Delta injection risk`, `Delta contradiction risk`, `Delta ambiguity risk`
+- Prompt Orchestrator preview shows mode badges for optimizer and compression (`LIVE`/`FALLBACK`/`UNKNOWN`) and detailed mode reason text.
 
 Complex simulation example with seeded data and repeated analysis cycles:
 
