@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-06-03T11:13:47.102447+00:00",
+  "results": [
+    {
+      "db_mode": "postgres",
+      "run_name": "load_low",
+      "users": 16,
+      "duration_s": 12,
+      "total_requests": 2007,
+      "successes": 2007,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 166.32,
+      "avg_ms": 95.94,
+      "p95_ms": 138.54,
+      "p99_ms": 170.55
+    },
+    {
+      "db_mode": "postgres",
+      "run_name": "load_high",
+      "users": 48,
+      "duration_s": 12,
+      "total_requests": 2039,
+      "successes": 2038,
+      "failures": 1,
+      "failure_rate_pct": 0.05,
+      "rps": 167.03,
+      "avg_ms": 285.29,
+      "p95_ms": 382.45,
+      "p99_ms": 403.01
+    },
+    {
+      "db_mode": "postgres",
+      "run_name": "stress",
+      "users": 96,
+      "duration_s": 16,
+      "total_requests": 825,
+      "successes": 633,
+      "failures": 192,
+      "failure_rate_pct": 23.27,
+      "rps": 34.18,
+      "avg_ms": 2768.76,
+      "p95_ms": 10010.01,
+      "p99_ms": 10014.46
+    }
+  ],
+  "errors": {
+    "sqlite": "HTTPConnectionPool(host='127.0.0.1', port=8011): Read timed out. (read timeout=10)"
+  }
+}

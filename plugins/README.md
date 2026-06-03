@@ -3,6 +3,8 @@
 PromptMan loads plugins from the `plugins/` directory.
 The scan is recursive, so you can organize plugins into subfolders such as `plugins/demos/` or `plugins/workbenches/`.
 
+PromptMan currently uses a conversation-first API surface. Plugin routes under `/v1/plugins/*` are fully supported in this model.
+
 ## Minimal contract
 
 Each plugin is a Python module with five required functions:

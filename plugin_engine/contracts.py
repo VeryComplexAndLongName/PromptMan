@@ -5,7 +5,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-
 PluginName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")]
 EndpointName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")]
 

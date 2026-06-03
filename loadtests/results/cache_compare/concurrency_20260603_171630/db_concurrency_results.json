@@ -1,0 +1,90 @@
+{
+  "generated_at": "2026-06-03T14:18:09.380740+00:00",
+  "results": [
+    {
+      "db_mode": "postgres_memory",
+      "run_name": "load_low",
+      "users": 16,
+      "duration_s": 12,
+      "total_requests": 2051,
+      "successes": 2051,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 169.67,
+      "avg_ms": 94.0,
+      "p95_ms": 131.67,
+      "p99_ms": 141.01
+    },
+    {
+      "db_mode": "postgres_memory",
+      "run_name": "load_high",
+      "users": 48,
+      "duration_s": 12,
+      "total_requests": 2009,
+      "successes": 2009,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 164.43,
+      "avg_ms": 289.31,
+      "p95_ms": 387.18,
+      "p99_ms": 455.31
+    },
+    {
+      "db_mode": "postgres_memory",
+      "run_name": "stress",
+      "users": 96,
+      "duration_s": 16,
+      "total_requests": 2589,
+      "successes": 2589,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 157.3,
+      "avg_ms": 602.84,
+      "p95_ms": 811.67,
+      "p99_ms": 996.75
+    },
+    {
+      "db_mode": "postgres_redis",
+      "run_name": "load_low",
+      "users": 16,
+      "duration_s": 12,
+      "total_requests": 2100,
+      "successes": 2100,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 174.05,
+      "avg_ms": 91.72,
+      "p95_ms": 129.57,
+      "p99_ms": 137.6
+    },
+    {
+      "db_mode": "postgres_redis",
+      "run_name": "load_high",
+      "users": 48,
+      "duration_s": 12,
+      "total_requests": 2015,
+      "successes": 2014,
+      "failures": 1,
+      "failure_rate_pct": 0.05,
+      "rps": 164.63,
+      "avg_ms": 289.63,
+      "p95_ms": 386.39,
+      "p99_ms": 432.77
+    },
+    {
+      "db_mode": "postgres_redis",
+      "run_name": "stress",
+      "users": 96,
+      "duration_s": 16,
+      "total_requests": 1064,
+      "successes": 896,
+      "failures": 168,
+      "failure_rate_pct": 15.79,
+      "rps": 40.8,
+      "avg_ms": 2108.57,
+      "p95_ms": 10002.16,
+      "p99_ms": 10014.23
+    }
+  ],
+  "errors": {}
+}

@@ -4,6 +4,6 @@ sqlalchemy
 alembic
 psycopg2-binary
 requests
-leo-prompt-optimizer
+redis
 loguru
 cryptography

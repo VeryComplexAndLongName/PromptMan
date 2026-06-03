@@ -19,7 +19,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from database import Base
 from main import app, get_db
-from optimizer.service import set_runtime_optimizer_config
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "").strip()
 
@@ -88,17 +87,6 @@ def client(db_session: Session) -> Iterator[TestClient]:
     main.StartupSessionLocal = original_startup_session_local
     main.init_database = original_init_database
     app.dependency_overrides.clear()
-
-
-@pytest.fixture(autouse=True)
-def reset_runtime_optimizer_config() -> Iterator[None]:
-    set_runtime_optimizer_config(
-        llm_provider="ollama",
-        llm_model="qwen2.5:0.5b",
-        llm_base_url="http://127.0.0.1:11434",
-        llm_timeout_seconds=300,
-    )
-    yield
 
 
 @pytest.fixture(autouse=True)

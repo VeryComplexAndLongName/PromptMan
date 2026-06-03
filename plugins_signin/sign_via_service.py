@@ -26,8 +26,8 @@ def _build_multipart_body(fields: dict[str, str], file_field_name: str, file_nam
     for key, value in fields.items():
         chunks.extend(
             [
-                f"--{boundary}\r\n".encode("utf-8"),
-                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"),
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
                 value.encode("utf-8"),
                 b"\r\n",
             ]
@@ -35,12 +35,12 @@ def _build_multipart_body(fields: dict[str, str], file_field_name: str, file_nam
 
     chunks.extend(
         [
-            f"--{boundary}\r\n".encode("utf-8"),
-            f'Content-Disposition: form-data; name="{file_field_name}"; filename="{file_name}"\r\n'.encode("utf-8"),
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{file_field_name}"; filename="{file_name}"\r\n'.encode(),
             b"Content-Type: application/octet-stream\r\n\r\n",
             file_bytes,
             b"\r\n",
-            f"--{boundary}--\r\n".encode("utf-8"),
+            f"--{boundary}--\r\n".encode(),
         ]
     )
 

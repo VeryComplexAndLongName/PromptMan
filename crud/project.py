@@ -1,8 +1,7 @@
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Project, Tag
+from models import Project
 
 from .common import normalize_project_name
 
@@ -47,15 +46,6 @@ def update_project(db: Session, project: Project, *, name: str) -> Project:
 
 
 def delete_project(db: Session, project: Project) -> None:
-    # Explicitly delete all related prompts and versions first
-    # (ensures cascade works even if relationships aren't loaded)
-    from models import Prompt, PromptVersion
-    db.query(PromptVersion).filter(
-        PromptVersion.prompt_id.in_(
-            db.query(Prompt.id).filter(Prompt.project_id == project.id)
-        )
-    ).delete(synchronize_session=False)
-    db.query(Prompt).filter(Prompt.project_id == project.id).delete(synchronize_session=False)
     db.delete(project)
     db.commit()
 
@@ -83,28 +73,3 @@ def get_or_create_projects(db: Session, names: list[str]) -> list[Project]:
         db.add_all(new_projects)
         db.flush()
     return [*existing, *new_projects]
-
-
-def get_or_create_tags(db: Session, tags: list[str]) -> list[Tag]:
-    if not tags:
-        return []
-
-    normalized_tags = sorted(set(tags))
-    existing = db.query(Tag).filter(Tag.name.in_(normalized_tags)).all()
-    by_name = {tag.name: tag for tag in existing}
-
-    for tag_name in normalized_tags:
-        if tag_name in by_name:
-            continue
-        tag = Tag(name=tag_name)
-        try:
-            with db.begin_nested():
-                db.add(tag)
-                db.flush()
-            by_name[tag_name] = tag
-        except IntegrityError:
-            existing_tag = db.query(Tag).filter(Tag.name == tag_name).first()
-            if existing_tag:
-                by_name[tag_name] = existing_tag
-
-    return [by_name[tag_name] for tag_name in normalized_tags if tag_name in by_name]

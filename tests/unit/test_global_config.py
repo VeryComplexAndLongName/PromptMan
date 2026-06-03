@@ -1,5 +1,5 @@
-import pytest
 from sqlalchemy.orm import Session
+
 from crud.common import get_global_config, set_global_config
 from models.models import GlobalConfig
 

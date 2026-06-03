@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from plugin_engine import PluginEndpointConfig, PluginLifecycleContext, PluginManifest, PluginRunContext, PluginUiControl, PluginUiOption
+from plugin_engine import (
+    PluginEndpointConfig,
+    PluginLifecycleContext,
+    PluginManifest,
+    PluginRunContext,
+    PluginUiControl,
+    PluginUiOption,
+)
 
 _STATE: dict[str, Any] = {
     "query": "",

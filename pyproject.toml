@@ -1,6 +1,6 @@
 [project]
 name = "prompt-man"
-version = "0.2.1"
+version = "0.2.2"
 description = "PromptMan: FastAPI + Vue app for storing, versioning, and optimizing prompts"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,7 +10,7 @@ dependencies = [
     "alembic>=1.13.0",
     "psycopg2-binary>=2.9.12",
     "requests>=2.33.1",
-    "leo-prompt-optimizer>=1.0.9",
+    "redis>=5.0.7",
     "loguru>=0.7.2",
     "cryptography>=48.0.0"
 ]
@@ -71,11 +71,7 @@ module = ["alembic.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["leo_prompt_optimizer.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["app_core.*", "cache.*", "database", "middleware.*", "models", "models.*", "optimizer.*", "routes.shared"]
+module = ["app_core.*", "cache.*", "database", "middleware.*", "models", "models.*", "routes.shared"]
 strict = true
 
 # ---------------------------------------------------------------------------

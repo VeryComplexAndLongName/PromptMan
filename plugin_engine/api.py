@@ -13,7 +13,6 @@ from .contracts import (
     PluginModalStartRequest,
 )
 
-
 router = APIRouter(prefix="/v1/plugins", tags=["Plugins"])
 
 

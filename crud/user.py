@@ -3,7 +3,7 @@ import datetime
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from models import Config, ProjectAccess, User
+from models import ProjectAccess, User
 
 from .project import get_or_create_projects
 from .role import get_role_by_name
@@ -47,17 +47,6 @@ def get_user_by_id(db: Session, user_id: int) -> User | None:
     )
 
 
-def get_or_create_user_config(db: Session, user_id: int) -> Config:
-    config = db.query(Config).filter(Config.user_id == user_id).first()
-    if config:
-        return config
-    config = Config(user_id=user_id)
-    db.add(config)
-    db.commit()
-    db.refresh(config)
-    return config
-
-
 def set_user_projects(db: Session, user: User, projects: list[str] | None) -> User:
     db_projects = get_or_create_projects(db, projects or [])
     user.project_access.clear()
@@ -84,7 +73,6 @@ def create_user(
     user = User(username=username.strip(), password_hash_encrypted=password_hash_encrypted, role_ref=role_record, is_active=is_active)
     db.add(user)
     db.flush()
-    db.add(Config(user_id=user.id))
     db.commit()
     db.refresh(user)
     return set_user_projects(db, user, projects)
