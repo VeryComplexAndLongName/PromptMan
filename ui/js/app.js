@@ -997,11 +997,46 @@ function renderPromptOrchestratorPreviewPlaceholder(message = "Select an action 
   $("promptOrchestratorLog").innerHTML = `<p class="analysis-placeholder">The backend preview log will appear here.</p>`;
 }
 
+function extractOrchestratorMode(recommendations, prefix) {
+  const rows = Array.isArray(recommendations) ? recommendations : [];
+  const normalizedPrefix = String(prefix || "").trim().toLowerCase();
+  const source = rows.find((item) => String(item || "").trim().toLowerCase().startsWith(normalizedPrefix));
+  const raw = String(source || "").trim();
+  const details = raw.includes(":") ? raw.split(":").slice(1).join(":").trim() : "";
+  const loweredDetails = details.toLowerCase();
+
+  if (!raw) {
+    return { label: "unknown", details: "Mode not reported" };
+  }
+  if (loweredDetails.startsWith("live llm")) {
+    return { label: "live", details: details || "Live LLM" };
+  }
+  if (loweredDetails.startsWith("fallback")) {
+    return { label: "fallback", details: details || "Fallback" };
+  }
+  return { label: "unknown", details: details || raw };
+}
+
+function renderModeBadge(title, mode) {
+  const safeTitle = escapeHtml(String(title || ""));
+  const label = String(mode?.label || "unknown").toLowerCase();
+  const details = escapeHtml(String(mode?.details || ""));
+  return `
+    <article class="analysis-card">
+      <p class="analysis-label">${safeTitle}</p>
+      <p class="analysis-value"><span class="mode-badge mode-badge-${label}">${label.toUpperCase()}</span></p>
+      <p class="analysis-value-small">${details}</p>
+    </article>
+  `;
+}
+
 function renderPromptOrchestratorPreview(report) {
   state.promptOrchestratorPreview = report;
   const analysis = report.analysis || {};
   const retrievedContext = Array.isArray(report.retrieved_context) ? report.retrieved_context : [];
   const recommendations = Array.isArray(report.recommendations) ? report.recommendations : [];
+  const optimizerMode = extractOrchestratorMode(recommendations, "optimizer mode:");
+  const compressionMode = extractOrchestratorMode(recommendations, "compression mode:");
 
   $("promptOrchestratorPreview").innerHTML = `
     <div class="analysis-grid">
@@ -1029,6 +1064,8 @@ function renderPromptOrchestratorPreview(report) {
         <p class="analysis-label">Security</p>
         <p class="analysis-value">${renderRiskCell(Number(analysis.injection_risk || 0))} / ${renderRiskCell(Number(analysis.contradiction_risk || 0))} / ${renderRiskCell(Number(analysis.ambiguity_risk || 0))}</p>
       </article>
+      ${renderModeBadge("Optimizer mode", optimizerMode)}
+      ${renderModeBadge("Compression mode", compressionMode)}
     </div>
 
     <div class="table-wrap">
