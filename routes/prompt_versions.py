@@ -73,11 +73,40 @@ def _http_post_json(
 
 
 def _invoke_live_llm(full_prompt: str) -> dict[str, object]:
+    return _invoke_profiled_llm(full_prompt, profile="test")
+
+
+def _resolve_profile_llm_config(profile: str) -> dict[str, object]:
+    profile_name = (profile or "test").strip().lower()
+
+    if profile_name == "optimizer":
+        return {
+            "provider": app_settings.get("OPTIMIZER_PROVIDER", "openai").strip().lower(),
+            "model": app_settings.get("OPTIMIZER_MODEL", "").strip(),
+            "backend": app_settings.get("OPTIMIZER_BACKEND", "leo").strip() or "leo",
+            "base_url": app_settings.get("OPTIMIZER_BASE_URL", "").strip(),
+            "token": app_settings.get("OPTIMIZER_API_TOKEN", "").strip(),
+            "timeout_seconds": app_settings.get_int("OPTIMIZER_TIMEOUT_SECONDS", 30),
+            "profile": "optimizer",
+        }
+
+    if profile_name == "compression":
+        return {
+            "provider": app_settings.get("PROMPT_COMPRESSION_PROVIDER", "openai").strip().lower(),
+            "model": app_settings.get("PROMPT_COMPRESSION_MODEL", "").strip(),
+            "backend": app_settings.get("PROMPT_COMPRESSION_BACKEND", "leo").strip() or "leo",
+            "base_url": app_settings.get("PROMPT_COMPRESSION_BASE_URL", "").strip(),
+            "token": app_settings.get("PROMPT_COMPRESSION_API_TOKEN", "").strip(),
+            "timeout_seconds": app_settings.get_int("OPTIMIZER_TIMEOUT_SECONDS", 30),
+            "profile": "compression",
+        }
+
     provider = app_settings.get("TEST_LLM_PROVIDER", "").strip().lower()
     model = app_settings.get("TEST_LLM_MODEL", "").strip()
     backend = app_settings.get("OPTIMIZER_BACKEND", "leo").strip() or "leo"
     base_url = app_settings.get("TEST_LLM_BASE_URL", "").strip()
     token = app_settings.get("TEST_LLM_API_TOKEN", "").strip()
+    timeout_seconds = app_settings.get_int("TEST_LLM_TIMEOUT_SECONDS", 30)
 
     use_optimizer_fallback = app_settings.get_bool("TEST_LLM_USE_OPTIMIZER_FALLBACK", True)
     if use_optimizer_fallback:
@@ -86,7 +115,25 @@ def _invoke_live_llm(full_prompt: str) -> dict[str, object]:
         base_url = base_url or app_settings.get("OPTIMIZER_BASE_URL", "").strip()
         token = token or app_settings.get("OPTIMIZER_API_TOKEN", "").strip()
 
-    timeout_seconds = app_settings.get_int("TEST_LLM_TIMEOUT_SECONDS", 30)
+    return {
+        "provider": provider,
+        "model": model,
+        "backend": backend,
+        "base_url": base_url,
+        "token": token,
+        "timeout_seconds": timeout_seconds,
+        "profile": "test",
+    }
+
+
+def _invoke_profiled_llm(full_prompt: str, *, profile: str = "test") -> dict[str, object]:
+    config = _resolve_profile_llm_config(profile)
+    provider = str(config.get("provider", "")).strip().lower()
+    model = str(config.get("model", "")).strip()
+    backend = str(config.get("backend", "leo")).strip() or "leo"
+    base_url = str(config.get("base_url", "")).strip()
+    token = str(config.get("token", "")).strip()
+    timeout_seconds = int(config.get("timeout_seconds", 30) or 30)
 
     if not base_url:
         default_map = {
@@ -381,7 +428,7 @@ def _compose_prompt_orchestrator_preview(chain, version, current_user: User) -> 
 
     retrieved_context = rag_info.get("chunks", []) if isinstance(rag_info, dict) else []
     source_prompt = version.content.strip()
-    improved_prompt = "\n".join([
+    heuristic_improved_prompt = "\n".join([
         f"You are a prompt orchestration assistant for chain '{chain.name}'.",
         "Use the retrieved context only when it is relevant to the user request.",
         "Keep the instruction hierarchy explicit: system > task > constraints > examples > retrieved context.",
@@ -393,6 +440,49 @@ def _compose_prompt_orchestrator_preview(chain, version, current_user: User) -> 
         "Suggested improvements:",
         "- " + "\n- ".join(recommendations),
     ])
+
+    optimizer_prompt = "\n".join([
+        "You are a prompt optimizer.",
+        "Rewrite the source prompt into a stronger, safer, and clearer instruction set.",
+        "Preserve user intent, placeholders, and explicit output constraints.",
+        "Return only the rewritten prompt text.",
+        "",
+        "Source prompt:",
+        source_prompt,
+        "",
+        "Suggested improvements:",
+        "- " + "\n- ".join(recommendations),
+    ])
+    optimizer_live = _invoke_profiled_llm(optimizer_prompt, profile="optimizer")
+    optimizer_llm = optimizer_live.get("llm", {}) if isinstance(optimizer_live, dict) else {}
+    optimizer_invoked = bool(optimizer_llm.get("llm_invoked")) if isinstance(optimizer_llm, dict) else False
+    optimizer_error = str(optimizer_live.get("llm_error", "") or "")
+    optimized_prompt = str(optimizer_live.get("response_text", "") or "").strip() or heuristic_improved_prompt
+
+    compression_prompt = "\n".join([
+        "You are a prompt compression assistant.",
+        "Compress the prompt while preserving constraints, safety rules, and placeholders.",
+        "Return only the compressed prompt text.",
+        "",
+        "Prompt to compress:",
+        optimized_prompt,
+    ])
+    compression_live = _invoke_profiled_llm(compression_prompt, profile="compression")
+    compression_llm = compression_live.get("llm", {}) if isinstance(compression_live, dict) else {}
+    compression_invoked = bool(compression_llm.get("llm_invoked")) if isinstance(compression_llm, dict) else False
+    compression_error = str(compression_live.get("llm_error", "") or "")
+    compressed_prompt = str(compression_live.get("response_text", "") or "").strip()
+
+    improved_prompt = compressed_prompt or optimized_prompt
+
+    recommendations.append(
+        "Optimizer mode: "
+        + ("live LLM" if optimizer_invoked else f"fallback ({optimizer_error or 'no response'})")
+    )
+    recommendations.append(
+        "Compression mode: "
+        + ("live LLM" if compression_invoked else f"fallback ({compression_error or 'no response'})")
+    )
 
     generated_at = datetime.now(UTC).isoformat()
     log_lines = [
@@ -411,6 +501,14 @@ def _compose_prompt_orchestrator_preview(chain, version, current_user: User) -> 
         "",
         "Analysis JSON:",
         json.dumps(analysis.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        "",
+        "Optimizer LLM snapshot:",
+        json.dumps(optimizer_llm, ensure_ascii=False, indent=2) if isinstance(optimizer_llm, dict) else "{}",
+        f"Optimizer error: {optimizer_error or '(none)'}",
+        "",
+        "Compression LLM snapshot:",
+        json.dumps(compression_llm, ensure_ascii=False, indent=2) if isinstance(compression_llm, dict) else "{}",
+        f"Compression error: {compression_error or '(none)'}",
         "",
         "Recommendations:",
         *(f"- {item}" for item in recommendations),
