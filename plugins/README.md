@@ -220,7 +220,7 @@ PromptMan includes a transport helper for calling PromptManSign without embeddin
 Use:
 
 ```text
-python plugins/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --signer-id promptman-team
+python plugins_signin/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --signer-id promptman-team
 ```
 
 What it does:
@@ -233,12 +233,12 @@ What it does:
 Optional trusted signer merge:
 
 ```text
-python plugins/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --trusted-signer-json /path/to/promptman-team.trusted-signer.json
+python plugins_signin/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --trusted-signer-json /path/to/promptman-team.trusted-signer.json
 ```
 
 With `--trusted-signer-json`, the helper also merges signer record into `plugins/trusted_signers.json`.
 
-Quick reference with only two commands: `plugins/SIGNING_QUICKSTART.md`.
+Quick reference with only two commands: `plugins_signin/SIGNING_QUICKSTART.md`.
 
 ## Role-based access
 

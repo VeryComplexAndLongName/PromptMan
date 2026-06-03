@@ -5,6 +5,9 @@ const state = {
   accessToken: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "",
   refreshToken: localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) || "",
   currentUser: null,
+  plugins: [],
+  pluginControlValues: {},
+  activePluginModal: null,
   selectedThreadId: null,
   threadMessages: [],
   threadAnalysisMessages: [],
@@ -256,6 +259,373 @@ function renderMessages(items) {
     renderMarkdown(contentNode, message.content);
     list.appendChild(li);
   }
+}
+
+function getPluginByName(pluginName) {
+  return state.plugins.find((item) => item.name === pluginName) || null;
+}
+
+function getPluginEndpoint(plugin, endpointName) {
+  const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
+  return endpoints.find((item) => item.name === endpointName) || null;
+}
+
+function getPluginControl(plugin, controlName) {
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  return controls.find((item) => item.name === controlName) || null;
+}
+
+function ensurePluginControlState(plugin) {
+  const key = String(plugin?.name || "");
+  if (!key) return {};
+  if (!state.pluginControlValues[key]) {
+    state.pluginControlValues[key] = {};
+  }
+  const values = state.pluginControlValues[key];
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  for (const control of controls) {
+    if (Object.prototype.hasOwnProperty.call(values, control.name)) continue;
+    if (control.default_value !== undefined && control.default_value !== null) {
+      values[control.name] = control.default_value;
+    } else if (control.control_type === "checkbox") {
+      values[control.name] = false;
+    } else {
+      values[control.name] = "";
+    }
+  }
+  return values;
+}
+
+function renderPluginControl(control, values, pluginName, scope = "runtime") {
+  const controlName = String(control?.name || "");
+  const label = escapeHtml(String(control?.label || controlName));
+  const endpointName = escapeHtml(String(control?.endpoint_name || ""));
+  const value = values?.[controlName];
+  const baseAttrs = `data-plugin-name="${escapeHtml(pluginName)}" data-control-name="${escapeHtml(controlName)}" data-endpoint-name="${endpointName}" data-control-type="${escapeHtml(control.control_type || "")}" data-plugin-scope="${escapeHtml(scope)}"`;
+
+  if (control.control_type === "button") {
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <button type="button" class="secondary" data-plugin-control-button="1" ${baseAttrs}>${label}</button>
+      </article>
+    `;
+  }
+
+  if (control.control_type === "checkbox") {
+    const checked = value ? "checked" : "";
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <label class="switch switch-sm" aria-label="${label}">
+          <input type="checkbox" ${checked} data-plugin-control-input="1" ${baseAttrs} />
+          <span class="slider"></span>
+        </label>
+      </article>
+    `;
+  }
+
+  if (control.control_type === "dropdown") {
+    const options = Array.isArray(control?.options) ? control.options : [];
+    const optionsHtml = options
+      .map((item) => {
+        const optionValue = String(item?.value || "");
+        const selected = String(value ?? "") === optionValue ? "selected" : "";
+        return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(String(item?.label || optionValue))}</option>`;
+      })
+      .join("");
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <select data-plugin-control-input="1" ${baseAttrs}>${optionsHtml}</select>
+      </article>
+    `;
+  }
+
+  if (control.control_type === "textarea") {
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <textarea rows="3" data-plugin-control-input="1" ${baseAttrs}>${escapeHtml(String(value ?? ""))}</textarea>
+      </article>
+    `;
+  }
+
+  return `
+    <article class="plugin-control">
+      <p class="plugin-control-label">${label}</p>
+      <input type="text" value="${escapeHtml(String(value ?? ""))}" data-plugin-control-input="1" ${baseAttrs} />
+    </article>
+  `;
+}
+
+function renderPluginControlsCell(plugin) {
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  if (!controls.length) {
+    return '<span class="muted">(no controls)</span>';
+  }
+  const values = ensurePluginControlState(plugin);
+  return `<div class="plugin-controls-grid">${controls.map((control) => renderPluginControl(control, values, plugin.name)).join("")}</div>`;
+}
+
+async function invokePluginEndpoint(pluginName, endpointName, payload = {}) {
+  const plugin = getPluginByName(pluginName);
+  const endpoint = getPluginEndpoint(plugin, endpointName);
+  const method = String(endpoint?.method || "POST").toUpperCase();
+  const path = `/v1/plugins/${encodeURIComponent(pluginName)}/${encodeURIComponent(endpointName)}`;
+  if (method === "GET") {
+    return await api(path, { method: "GET" });
+  }
+  return await api(path, { method, body: JSON.stringify(payload || {}) });
+}
+
+async function hydratePluginControls(plugin) {
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  if (!controls.length) return;
+
+  const values = ensurePluginControlState(plugin);
+  for (const control of controls) {
+    const initEndpoint = control.init_endpoint_name || `${control.endpoint_name}_init`;
+    try {
+      const result = await invokePluginEndpoint(plugin.name, initEndpoint, {
+        source: "plugins-ui-init",
+        control_name: control.name,
+        controls: { ...values },
+      });
+      if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "value")) {
+        values[control.name] = result.value;
+      }
+    } catch (_error) {
+      // Keep default values when init endpoint is missing or fails.
+    }
+  }
+}
+
+async function openPluginModal(pluginName, endpointName) {
+  const controls = { ...(state.pluginControlValues[pluginName] || {}) };
+  const session = await api(`/v1/plugins/${encodeURIComponent(pluginName)}/modals`, {
+    method: "POST",
+    body: JSON.stringify({ endpoint_name: endpointName, payload: { controls }, controls }),
+  });
+  state.activePluginModal = session;
+  renderPluginModalSession(session);
+  const dialog = $("pluginModalDialog");
+  if (dialog && typeof dialog.showModal === "function") {
+    dialog.showModal();
+  }
+}
+
+function renderPluginModalSession(session) {
+  if (!session) return;
+  $("pluginModalTitle").textContent = String(session.modal?.title || "Plugin modal");
+  $("pluginModalDescription").textContent = String(session.modal?.description || "");
+  renderMarkdown($("pluginModalMarkdown"), String(session.modal?.body_markdown || ""));
+  $("pluginModalStatus").textContent = String(session.modal?.status || session.state || "");
+  $("pluginModalLogs").textContent = Array.isArray(session.logs) ? session.logs.join("\n") : "";
+
+  const controls = Array.isArray(session.modal?.controls) ? session.modal.controls : [];
+  const values = session.control_values || {};
+  $("pluginModalControls").innerHTML = controls.map((control) => renderPluginControl(control, values, session.plugin_name, "modal")).join("");
+
+  const stopBtn = $("pluginModalStopBtn");
+  if (stopBtn) {
+    stopBtn.textContent = String(session.modal?.stop_label || "Stop");
+    stopBtn.disabled = Boolean(session.stop_requested);
+  }
+  const closeBtn = $("pluginModalCloseBtn");
+  if (closeBtn) {
+    closeBtn.textContent = String(session.modal?.close_label || "Close");
+  }
+}
+
+async function closePluginModalSession() {
+  const session = state.activePluginModal;
+  const dialog = $("pluginModalDialog");
+  if (!session) {
+    if (dialog?.open) dialog.close();
+    return;
+  }
+  try {
+    await api(`/v1/plugins/${encodeURIComponent(session.plugin_name)}/modals/${encodeURIComponent(session.session_id)}`, {
+      method: "DELETE",
+    });
+  } catch (_error) {
+    // Close UI even if backend session is already closed.
+  }
+  state.activePluginModal = null;
+  if (dialog?.open) dialog.close();
+}
+
+async function stopPluginModalSession() {
+  const session = state.activePluginModal;
+  if (!session) return;
+  const next = await api(`/v1/plugins/${encodeURIComponent(session.plugin_name)}/modals/${encodeURIComponent(session.session_id)}/stop`, {
+    method: "POST",
+  });
+  state.activePluginModal = next;
+  renderPluginModalSession(next);
+}
+
+async function updatePluginModalControlValue(controlName, value) {
+  const session = state.activePluginModal;
+  if (!session) return;
+  const controls = { ...(session.control_values || {}) };
+  controls[controlName] = value;
+  const next = await api(
+    `/v1/plugins/${encodeURIComponent(session.plugin_name)}/modals/${encodeURIComponent(session.session_id)}/controls/${encodeURIComponent(controlName)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ control_name: controlName, value, controls }),
+    },
+  );
+  state.activePluginModal = next;
+  renderPluginModalSession(next);
+}
+
+function detectPluginTypes(plugin) {
+  const types = [];
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  const hooks = Array.isArray(plugin?.hooks) ? plugin.hooks : [];
+  const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
+  const hasModalEndpoint = endpoints.some((item) => Boolean(item?.launches_modal));
+
+  if (controls.length) types.push("ui");
+  if (hasModalEndpoint) types.push("modal");
+  if (hooks.length) types.push("hook");
+  if (endpoints.length && !types.includes("modal")) types.push("headless");
+  if (!types.length) types.push("unknown");
+
+  return types;
+}
+
+function renderPluginTypeChips(types) {
+  return types
+    .map((type) => `<span class="plugin-type-chip">${escapeHtml(String(type).toUpperCase())}</span>`)
+    .join("");
+}
+
+function isCurrentUserAdmin() {
+  return state.currentUser?.role === "admin";
+}
+
+function renderPluginAdminActions(pluginName) {
+  if (!isCurrentUserAdmin()) {
+    return '<span class="muted">(admin only)</span>';
+  }
+  const safePluginName = escapeHtml(String(pluginName || ""));
+  return `
+    <div class="plugin-actions">
+      <button type="button" class="ghost" data-plugin-admin-action="reload" data-plugin-name="${safePluginName}">Reload</button>
+      <button type="button" class="secondary" data-plugin-admin-action="health" data-plugin-name="${safePluginName}">Health</button>
+    </div>
+  `;
+}
+
+function renderPluginsTable(items) {
+  const tbody = $("pluginsTable").querySelector("tbody");
+  tbody.innerHTML = "";
+
+  if (!Array.isArray(items) || !items.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="muted">No plugins found.</td></tr>';
+    return;
+  }
+
+  for (const plugin of items) {
+    const row = document.createElement("tr");
+    const types = detectPluginTypes(plugin);
+    const description = String(plugin.description || "").trim() || "(no description)";
+    const signature = String(plugin.signature_status || "unsigned");
+    const endpointsCount = Array.isArray(plugin.endpoints) ? plugin.endpoints.length : 0;
+
+    row.innerHTML = `
+      <td><strong>${escapeHtml(String(plugin.name || ""))}</strong></td>
+      <td>${renderPluginTypeChips(types)}</td>
+      <td>${escapeHtml(String(plugin.version || "unknown"))}</td>
+      <td>${escapeHtml(description)}</td>
+      <td class="plugin-controls-cell">${renderPluginControlsCell(plugin)}</td>
+      <td>${escapeHtml(String(plugin.state || "unknown"))}</td>
+      <td>${escapeHtml(signature)}</td>
+      <td>${endpointsCount}</td>
+      <td><span class="muted">${escapeHtml(String(plugin.source_path || ""))}</span></td>
+      <td>${renderPluginAdminActions(plugin.name)}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+
+async function refreshPlugins() {
+  if (!state.accessToken) {
+    state.plugins = [];
+    renderPluginsTable([]);
+    $("pluginsStatus").textContent = "Sign in to view plugin catalog.";
+    return;
+  }
+
+  try {
+    const items = await api("/v1/plugins");
+    state.plugins = Array.isArray(items) ? items : [];
+    for (const plugin of state.plugins) {
+      ensurePluginControlState(plugin);
+      await hydratePluginControls(plugin);
+    }
+    renderPluginsTable(state.plugins);
+    $("pluginsStatus").textContent = `Loaded ${state.plugins.length} plugin(s).`;
+  } catch (error) {
+    $("pluginsStatus").textContent = `Failed to load plugins: ${error.message}`;
+  }
+}
+
+async function handlePluginControlAction(pluginName, controlName, nextValue, scope) {
+  const plugin = getPluginByName(pluginName);
+  if (!plugin) return;
+  const control = getPluginControl(plugin, controlName);
+  if (!control) return;
+
+  if (scope === "modal") {
+    await updatePluginModalControlValue(controlName, nextValue);
+    return;
+  }
+
+  const values = ensurePluginControlState(plugin);
+  values[controlName] = nextValue;
+
+  const endpointConfig = getPluginEndpoint(plugin, control.endpoint_name);
+  const isModalEntrypoint = Boolean(endpointConfig?.launches_modal);
+
+  if (isModalEntrypoint) {
+    await openPluginModal(pluginName, control.endpoint_name);
+    return;
+  }
+
+  const result = await invokePluginEndpoint(pluginName, control.endpoint_name, {
+    value: nextValue,
+    control_name: controlName,
+    controls: { ...values },
+  });
+
+  const message = typeof result?.message === "string" ? result.message : `${pluginName}.${control.endpoint_name} executed`;
+  $("pluginsStatus").textContent = message;
+}
+
+async function runPluginAdminAction(pluginName, action) {
+  if (!isCurrentUserAdmin()) {
+    $("pluginsStatus").textContent = "Admin role is required for plugin admin actions.";
+    return;
+  }
+  const normalizedAction = String(action || "").toLowerCase();
+  if (normalizedAction !== "reload" && normalizedAction !== "health") {
+    return;
+  }
+
+  const path =
+    normalizedAction === "reload"
+      ? `/v1/plugins/${encodeURIComponent(pluginName)}/_reload`
+      : `/v1/plugins/${encodeURIComponent(pluginName)}/health`;
+
+  const result = await api(path, { method: "POST", body: JSON.stringify({}) });
+  const message = typeof result?.message === "string" ? result.message : `${normalizedAction} completed for ${pluginName}`;
+  $("pluginsStatus").textContent = message;
+  await refreshPlugins();
 }
 
 function renderPromptChains(items) {
@@ -2448,6 +2818,9 @@ function logout() {
   state.accessToken = "";
   state.refreshToken = "";
   state.currentUser = null;
+  state.plugins = [];
+  state.pluginControlValues = {};
+  state.activePluginModal = null;
   state.selectedThreadId = null;
   state.threadMessages = [];
   state.threadAnalysisReport = null;
@@ -2481,6 +2854,8 @@ function logout() {
   $("promptVersionMarkdown").innerHTML = "";
   $("promptChainTrendChart").innerHTML = "";
   $("promptChainMetricsTable").querySelector("tbody").innerHTML = "";
+  $("pluginsTable").querySelector("tbody").innerHTML = "";
+  $("pluginsStatus").textContent = "Sign in to view plugin catalog.";
   $("settingsTable").querySelector("tbody").innerHTML = "";
   $("usersTable").querySelector("tbody").innerHTML = "";
 
@@ -2491,6 +2866,9 @@ function logout() {
   $("authMenuStatus").textContent = "";
 
   toggleStatusMenu(false);
+  if ($("pluginModalDialog")?.open) {
+    $("pluginModalDialog").close();
+  }
   renderAuth();
   updateThreadChartLabelModeButton();
   setActiveTab("panelCreateThread");
@@ -2560,6 +2938,94 @@ function bindEvents() {
   $("exportPromptTestRunJsonBtn").addEventListener("click", exportPromptTestRunJson);
   $("exportPromptTestRunPdfBtn").addEventListener("click", exportPromptTestRunPdf);
 
+  $("refreshPluginsBtn").addEventListener("click", refreshPlugins);
+
+  $("pluginsTable").addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const adminAction = String(target.dataset.pluginAdminAction || "");
+    if (adminAction) {
+      try {
+        const pluginName = String(target.dataset.pluginName || "");
+        await runPluginAdminAction(pluginName, adminAction);
+      } catch (error) {
+        $("pluginsStatus").textContent = `Plugin admin action failed: ${error.message}`;
+      }
+      return;
+    }
+
+    if (target.dataset.pluginControlButton !== "1") return;
+    try {
+      const pluginName = String(target.dataset.pluginName || "");
+      const controlName = String(target.dataset.controlName || "");
+      const scope = String(target.dataset.pluginScope || "runtime");
+      await handlePluginControlAction(pluginName, controlName, true, scope);
+    } catch (error) {
+      $("pluginsStatus").textContent = `Plugin action failed: ${error.message}`;
+    }
+  });
+
+  $("pluginsTable").addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.pluginControlInput !== "1") return;
+
+    try {
+      const pluginName = String(target.dataset.pluginName || "");
+      const controlName = String(target.dataset.controlName || "");
+      const scope = String(target.dataset.pluginScope || "runtime");
+      let nextValue = "";
+      if (target instanceof HTMLInputElement && target.type === "checkbox") {
+        nextValue = target.checked;
+      } else if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) {
+        nextValue = target.value;
+      }
+      await handlePluginControlAction(pluginName, controlName, nextValue, scope);
+    } catch (error) {
+      $("pluginsStatus").textContent = `Plugin control update failed: ${error.message}`;
+    }
+  });
+
+  $("pluginModalControls").addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.pluginControlButton !== "1") return;
+    try {
+      const controlName = String(target.dataset.controlName || "");
+      await handlePluginControlAction(String(target.dataset.pluginName || ""), controlName, true, "modal");
+    } catch (error) {
+      $("pluginsStatus").textContent = `Modal action failed: ${error.message}`;
+    }
+  });
+
+  $("pluginModalControls").addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.pluginControlInput !== "1") return;
+    try {
+      const controlName = String(target.dataset.controlName || "");
+      let nextValue = "";
+      if (target instanceof HTMLInputElement && target.type === "checkbox") {
+        nextValue = target.checked;
+      } else if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) {
+        nextValue = target.value;
+      }
+      await handlePluginControlAction(String(target.dataset.pluginName || ""), controlName, nextValue, "modal");
+    } catch (error) {
+      $("pluginsStatus").textContent = `Modal control update failed: ${error.message}`;
+    }
+  });
+
+  $("pluginModalCloseBtn").addEventListener("click", closePluginModalSession);
+  $("pluginModalCloseIconBtn").addEventListener("click", closePluginModalSession);
+  $("pluginModalStopBtn").addEventListener("click", async () => {
+    try {
+      await stopPluginModalSession();
+    } catch (error) {
+      $("pluginsStatus").textContent = `Modal stop failed: ${error.message}`;
+    }
+  });
+
   $("refreshSettingsBtn").addEventListener("click", loadSettings);
   $("createUserBtn").addEventListener("click", createUserFromSettings);
   $("refreshUsersBtn").addEventListener("click", refreshUsers);
@@ -2609,6 +3075,9 @@ function bindEvents() {
         await loadSettings();
         setSettingsSubTab("settingsPanelLlm");
       }
+      if (targetId === "panelPlugins") {
+        await refreshPlugins();
+      }
     });
   });
 }
@@ -2625,6 +3094,8 @@ function bindEvents() {
   renderThreadAnalysisPlaceholder("Select a thread and click Analyze.");
   $("promptVersionAnalysis").innerHTML = '<p class="analysis-placeholder">Select a version to view analysis.</p>';
   renderPromptTestRunPlaceholder("Select a version and run a test.");
+  renderPluginsTable([]);
+  $("pluginsStatus").textContent = "Sign in to view plugin catalog.";
   updateLlmSaveButtonsState();
 
   if (!state.accessToken) return;
@@ -2634,6 +3105,7 @@ function bindEvents() {
     renderAuth();
     await refreshThreads();
     await refreshPromptChains();
+    await refreshPlugins();
     if (state.currentUser?.role === "admin") {
       await loadSettings();
     }

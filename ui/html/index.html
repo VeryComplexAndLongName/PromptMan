@@ -70,6 +70,7 @@
           <button class="tab is-active" id="tabCreateThread" data-target="panelCreateThread" role="tab" aria-selected="true">Current thread</button>
           <button class="tab" id="tabThreads" data-target="panelThreads" role="tab" aria-selected="false">Threads</button>
           <button class="tab" id="tabPromptVersions" data-target="panelPromptVersions" role="tab" aria-selected="false">Prompt versions</button>
+          <button class="tab" id="tabPlugins" data-target="panelPlugins" role="tab" aria-selected="false">Plugins</button>
           <button class="tab" id="tabSettings" data-target="panelSettings" role="tab" aria-selected="false" hidden>Settings</button>
         </nav>
 
@@ -244,6 +245,59 @@ ASSISTANT: hello"></textarea>
             </article>
           </div>
         </section>
+
+        <section id="panelPlugins" class="tab-panel" role="tabpanel" hidden>
+          <div class="panel-toolbar">
+            <button id="refreshPluginsBtn" class="ghost">Refresh plugins</button>
+          </div>
+          <article class="subcard groupbox">
+            <h2>Installed plugins</h2>
+            <p id="pluginsStatus" class="muted">Open this tab to load plugin catalog.</p>
+            <div class="table-wrap plugins-table-wrap">
+              <table class="metrics-table" id="pluginsTable">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Version</th>
+                    <th>Description</th>
+                    <th>Controls</th>
+                    <th>State</th>
+                    <th>Signature</th>
+                    <th>Endpoints</th>
+                    <th>Source</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <dialog id="pluginModalDialog" class="plugin-modal-dialog">
+          <article class="plugin-modal-card">
+            <header class="plugin-modal-header">
+              <div>
+                <h3 id="pluginModalTitle">Plugin modal</h3>
+                <p id="pluginModalDescription" class="muted"></p>
+              </div>
+              <button id="pluginModalCloseIconBtn" class="ghost" type="button">Close</button>
+            </header>
+            <section class="plugin-modal-body">
+              <article id="pluginModalMarkdown" class="markdown-box"></article>
+              <p id="pluginModalStatus" class="analysis-note"></p>
+              <div id="pluginModalControls" class="plugin-controls-grid"></div>
+              <div class="table-wrap">
+                <pre id="pluginModalLogs" class="log-output"></pre>
+              </div>
+            </section>
+            <footer class="plugin-modal-footer actions">
+              <button id="pluginModalStopBtn" class="secondary" type="button">Stop</button>
+              <button id="pluginModalCloseBtn" class="ghost" type="button">Close</button>
+            </footer>
+          </article>
+        </dialog>
 
         <section id="panelSettings" class="tab-panel" role="tabpanel" hidden>
           <article class="subcard">
