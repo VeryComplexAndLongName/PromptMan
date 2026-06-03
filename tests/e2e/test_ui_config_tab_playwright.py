@@ -5,7 +5,7 @@ import socket
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path  # noqa: TC003
 from urllib.error import URLError
 from urllib.request import urlopen
 
