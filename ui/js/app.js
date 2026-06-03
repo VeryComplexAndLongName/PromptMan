@@ -7,6 +7,7 @@ const state = {
   currentUser: null,
   selectedThreadId: null,
   threadMessages: [],
+  threadAnalysisMessages: [],
   threadAnalysisReport: null,
   threadAnalysisLog: null,
   threadChartLabelMode: "smart",
@@ -529,20 +530,56 @@ function computeSecurityMetrics(text) {
   const injectionMarkers = [
     "ignore previous",
     "disregard above",
+    "ignore all previous",
+    "ignore prior",
     "system prompt",
+    "hidden prompt",
     "developer mode",
     "reveal hidden",
+    "reveal prompt",
     "jailbreak",
     "bypass",
     "do anything now",
+    "игнорируй предыдущ",
+    "проигнорируй предыдущ",
+    "не следуй предыдущ",
+    "системный промпт",
+    "скрытый промпт",
+    "раскрой систем",
+    "режим разработчика",
+    "джейлбрейк",
+    "обойди ограничени",
   ];
   const contradictionPairs = [
     ["always", "never"],
     ["must", "optional"],
     ["strict", "flexible"],
     ["only", "any"],
+    ["всегда", "никогда"],
+    ["должен", "необязательно"],
+    ["обязательно", "опционально"],
+    ["только", "любой"],
+    ["строго", "гибко"],
   ];
-  const ambiguityMarkers = ["maybe", "possibly", "etc", "somehow", "approximately", "around"];
+  const ambiguityMarkers = [
+    "maybe",
+    "possibly",
+    "etc",
+    "somehow",
+    "approximately",
+    "around",
+    "perhaps",
+    "kind of",
+    "more or less",
+    "может",
+    "возможно",
+    "как-нибудь",
+    "примерно",
+    "около",
+    "и т.д",
+    "и тп",
+    "по возможности",
+  ];
 
   let injectionHits = 0;
   const markers = [];
@@ -567,9 +604,9 @@ function computeSecurityMetrics(text) {
   }
 
   return {
-    injection_risk: injectionHits ? Math.min(100, Number((20 + injectionHits * 18).toFixed(2))) : 8,
-    contradiction_risk: contradictionHits ? Math.min(100, Number((15 + contradictionHits * 22).toFixed(2))) : 6,
-    ambiguity_risk: ambiguityHits ? Math.min(100, Number((10 + ambiguityHits * 9).toFixed(2))) : 5,
+    injection_risk: injectionHits ? Math.min(100, Number((20 + injectionHits * 18).toFixed(2))) : 0,
+    contradiction_risk: contradictionHits ? Math.min(100, Number((15 + contradictionHits * 22).toFixed(2))) : 0,
+    ambiguity_risk: ambiguityHits ? Math.min(100, Number((10 + ambiguityHits * 9).toFixed(2))) : 0,
     markers,
   };
 }
@@ -592,8 +629,8 @@ function cycleThreadChartLabelMode() {
   const next = THREAD_CHART_LABEL_MODE_OPTIONS[(currentIndex + 1) % THREAD_CHART_LABEL_MODE_OPTIONS.length];
   state.threadChartLabelMode = next.key;
   updateThreadChartLabelModeButton();
-  if (state.threadAnalysisReport && state.threadMessages.length) {
-    renderThreadAnalysis(state.threadAnalysisReport, state.threadMessages);
+  if (state.threadAnalysisReport && state.threadAnalysisMessages.length) {
+    renderThreadAnalysis(state.threadAnalysisReport, state.threadAnalysisMessages);
   }
 }
 
@@ -691,10 +728,11 @@ function renderThreadTrendChart(messages, securityTrend = []) {
 
 function renderThreadAnalysisPlaceholder(message = "Click Analyze to build a report for this thread.") {
   state.threadAnalysisReport = null;
+  state.threadAnalysisMessages = [];
   $("analyzeOutput").innerHTML = `<p class="analysis-placeholder">${escapeHtml(message)}</p>`;
 }
 
-function renderThreadAnalysisLogPlaceholder(message = "Click Full log to fetch the backend analysis log for this thread.") {
+function renderThreadAnalysisLogPlaceholder(message = "Run Prompt Orchestrator improve + analyze to inspect the improvement log.") {
   state.threadAnalysisLog = null;
   $("threadAnalysisLog").innerHTML = `<p class="analysis-placeholder">${escapeHtml(message)}</p>`;
 }
@@ -829,6 +867,10 @@ function renderThreadAnalysis(report, messages = []) {
         <p class="analysis-label">Ambiguity risk</p>
         <p class="analysis-value">${Number(totalSecurity.ambiguity_risk || 0).toFixed(2)}</p>
       </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Security markers (thread)</p>
+        <p class="analysis-value-small">${escapeHtml((totalSecurity.markers || []).join(", ") || "-")}</p>
+      </article>
     </div>
 
     <div id="threadTrendChart" class="trend-chart"></div>
@@ -860,12 +902,13 @@ function renderThreadAnalysis(report, messages = []) {
             <th>Injection risk</th>
             <th>Contradiction risk</th>
             <th>Ambiguity risk</th>
+            <th>Markers</th>
           </tr>
         </thead>
         <tbody>
           ${securityByMessage
             .map(
-              (item) => `<tr><td>${item.seq_no}</td><td>${renderRiskCell(item.injection_risk)}</td><td>${renderRiskCell(item.contradiction_risk)}</td><td>${renderRiskCell(item.ambiguity_risk)}</td></tr>`,
+              (item) => `<tr><td>${item.seq_no}</td><td>${renderRiskCell(item.injection_risk)}</td><td>${renderRiskCell(item.contradiction_risk)}</td><td>${renderRiskCell(item.ambiguity_risk)}</td><td>${escapeHtml((item.markers || []).join(", ") || "-")}</td></tr>`,
             )
             .join("")}
         </tbody>
@@ -1683,6 +1726,7 @@ async function loadThreadDetails() {
   renderThreadAnalysisLogPlaceholder();
   const messages = await api(`/v1/conversations/threads/${state.selectedThreadId}/messages`);
   state.threadMessages = messages;
+  state.threadAnalysisMessages = messages;
   renderMessages(messages);
   await refreshThreads();
 }
@@ -1770,11 +1814,145 @@ async function analyzeThread() {
       state.threadMessages = await api(`/v1/conversations/threads/${state.selectedThreadId}/messages`);
       renderMessages(state.threadMessages);
     }
+    state.threadAnalysisMessages = state.threadMessages;
     state.threadAnalysisReport = result;
-    renderThreadAnalysis(result, state.threadMessages);
+    renderThreadAnalysis(result, state.threadAnalysisMessages);
     await loadThreadAnalysisLog();
   } catch (error) {
     $("analyzeOutput").innerHTML = `<p class="analysis-placeholder">Analyze failed: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function buildThreadReportFromMessages(threadId, messages) {
+  const counters = { user: 0, assistant: 0, system: 0, tool: 0 };
+  let totalChars = 0;
+  let startedAt = null;
+  let endedAt = null;
+
+  for (const msg of messages) {
+    const role = String(msg.role || "").trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(counters, role)) {
+      counters[role] += 1;
+    }
+    const content = String(msg.content || "");
+    totalChars += content.length;
+
+    const dt = msg.timestamp ? new Date(msg.timestamp) : null;
+    if (dt && Number.isFinite(dt.getTime())) {
+      if (!startedAt || dt < startedAt) startedAt = dt;
+      if (!endedAt || dt > endedAt) endedAt = dt;
+    }
+  }
+
+  return {
+    thread_id: Number(threadId || 0),
+    turns: messages.length,
+    user_turns: counters.user,
+    assistant_turns: counters.assistant,
+    system_turns: counters.system,
+    tool_turns: counters.tool,
+    total_chars: totalChars,
+    started_at: startedAt ? startedAt.toISOString() : null,
+    ended_at: endedAt ? endedAt.toISOString() : null,
+  };
+}
+
+function buildPromptOrchestratorRecommendations(content) {
+  const metrics = computeSecurityMetrics(content);
+  const recommendations = [];
+  if (Number(metrics.injection_risk || 0) >= 20) {
+    recommendations.push("Harden instruction hierarchy and remove conflicting directives.");
+  }
+  if (Number(metrics.contradiction_risk || 0) >= 10) {
+    recommendations.push("Resolve contradictory constraints and make precedence explicit.");
+  }
+  if (Number(metrics.ambiguity_risk || 0) >= 10) {
+    recommendations.push("Replace vague phrasing with concrete thresholds and expected outputs.");
+  }
+  if (!recommendations.length) {
+    recommendations.push("Prompt is stable; preserve structure and trim redundant text.");
+  }
+  return { metrics, recommendations };
+}
+
+function orchestratePromptText(content) {
+  const source = String(content || "").trim();
+  const { recommendations } = buildPromptOrchestratorRecommendations(source);
+  const improved = [
+    "You are a prompt orchestration assistant.",
+    "Keep instruction hierarchy explicit: system > task > constraints > examples > context.",
+    "Return concise, structured output and avoid unsupported claims.",
+    "",
+    "Source prompt:",
+    source,
+    "",
+    "Suggested improvements:",
+    ...recommendations.map((item) => `- ${item}`),
+  ].join("\n");
+  return { improved_prompt: improved, recommendations };
+}
+
+async function orchestrateAndAnalyzeThreadChain() {
+  if (!state.selectedThreadId) {
+    $("analyzeOutput").innerHTML = '<p class="analysis-placeholder">Select a thread first.</p>';
+    return;
+  }
+
+  try {
+    if (!state.threadMessages.length) {
+      state.threadMessages = await api(`/v1/conversations/threads/${state.selectedThreadId}/messages`);
+      renderMessages(state.threadMessages);
+    }
+
+    const improvedMessages = state.threadMessages.map((msg, index) => {
+      const sourceContent = String(msg.content || "");
+      const orchestrated = orchestratePromptText(sourceContent);
+      return {
+        ...msg,
+        seq_no: Number(msg.seq_no || index + 1),
+        content: orchestrated.improved_prompt,
+        _orchestrator_recommendations: orchestrated.recommendations,
+        _original_content: sourceContent,
+      };
+    });
+
+    state.threadAnalysisMessages = improvedMessages;
+    const syntheticReport = buildThreadReportFromMessages(state.selectedThreadId, improvedMessages);
+    state.threadAnalysisReport = syntheticReport;
+    renderThreadAnalysis(syntheticReport, improvedMessages);
+
+    const logRows = improvedMessages
+      .map((msg) => {
+        const seqNo = Number(msg.seq_no || 0);
+        const rec = Array.isArray(msg._orchestrator_recommendations) ? msg._orchestrator_recommendations : [];
+        const original = String(msg._original_content || "");
+        const improved = String(msg.content || "");
+        return [
+          `[${seqNo}] role=${msg.role}`,
+          "Original:",
+          original,
+          "",
+          "Recommendations:",
+          ...(rec.length ? rec.map((item) => `- ${item}`) : ["- (none)"]),
+          "",
+          "Improved:",
+          improved,
+          "",
+        ].join("\n");
+      })
+      .join("\n------------------------------\n\n");
+
+    $("threadAnalysisLog").innerHTML = `
+      <div class="analysis-card">
+        <p class="analysis-label">Prompt Orchestrator pass</p>
+        <p class="analysis-value-small">Improved messages: ${improvedMessages.length}</p>
+      </div>
+      <div class="table-wrap">
+        <pre class="log-output">${escapeHtml(logRows)}</pre>
+      </div>
+    `;
+  } catch (error) {
+    $("analyzeOutput").innerHTML = `<p class="analysis-placeholder">Orchestrate + analyze failed: ${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -2049,8 +2227,8 @@ function closeDetailsMenu(menuId) {
   }
 }
 
-async function handlePromptChainAnalyzeChoice(choice) {
-  closeDetailsMenu("promptChainAnalyzeMenu");
+async function handlePromptChainAnalyzeChoice(choice, menuId = "promptChainAnalyzeMenu") {
+  closeDetailsMenu(menuId);
   if (choice === "chain") {
     await analyzePromptChain();
     return;
@@ -2061,17 +2239,6 @@ async function handlePromptChainAnalyzeChoice(choice) {
       return;
     }
     await previewPromptOrchestrator();
-  }
-}
-
-async function handleThreadAnalyzeChoice(choice) {
-  closeDetailsMenu("threadAnalyzeMenu");
-  if (choice === "thread") {
-    await analyzeThread();
-    return;
-  }
-  if (choice === "log") {
-    await loadThreadAnalysisLog();
   }
 }
 
@@ -2325,13 +2492,15 @@ function bindEvents() {
   $("refreshMessagesBtn").addEventListener("click", loadThreadDetails);
   $("importJsonBtn").addEventListener("click", importJson);
   $("importTextBtn").addEventListener("click", importText);
-  $("analyzeThreadBtn").addEventListener("click", (event) => {
+  $("analyzeThreadChainBtn").addEventListener("click", (event) => {
     event.preventDefault();
-    handleThreadAnalyzeChoice("thread");
+    closeDetailsMenu("threadAnalyzeMenu");
+    analyzeThread();
   });
-  $("threadFullLogBtn").addEventListener("click", (event) => {
+  $("orchestrateAnalyzeThreadChainBtn").addEventListener("click", (event) => {
     event.preventDefault();
-    handleThreadAnalyzeChoice("log");
+    closeDetailsMenu("threadAnalyzeMenu");
+    orchestrateAndAnalyzeThreadChain();
   });
   $("threadChartLabelModeBtn").addEventListener("click", cycleThreadChartLabelMode);
   $("exportThreadAnalysisPdfBtn").addEventListener("click", exportThreadAnalysisPdf);

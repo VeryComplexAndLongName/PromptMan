@@ -79,20 +79,56 @@ def compute_prompt_security_metrics(content: str) -> dict[str, float | list[str]
     injection_markers = [
         "ignore previous",
         "disregard above",
+        "ignore all previous",
+        "ignore prior",
         "system prompt",
+        "hidden prompt",
         "developer mode",
         "reveal hidden",
+        "reveal prompt",
         "jailbreak",
         "bypass",
         "do anything now",
+        "игнорируй предыдущ",
+        "проигнорируй предыдущ",
+        "не следуй предыдущ",
+        "системный промпт",
+        "скрытый промпт",
+        "раскрой систем",
+        "режим разработчика",
+        "джейлбрейк",
+        "обойди ограничени",
     ]
     contradiction_pairs = [
         ("always", "never"),
         ("must", "optional"),
         ("strict", "flexible"),
         ("only", "any"),
+        ("всегда", "никогда"),
+        ("должен", "необязательно"),
+        ("обязательно", "опционально"),
+        ("только", "любой"),
+        ("строго", "гибко"),
     ]
-    ambiguity_markers = ["maybe", "possibly", "etc", "somehow", "approximately", "around"]
+    ambiguity_markers = [
+        "maybe",
+        "possibly",
+        "etc",
+        "somehow",
+        "approximately",
+        "around",
+        "perhaps",
+        "kind of",
+        "more or less",
+        "может",
+        "возможно",
+        "как-нибудь",
+        "примерно",
+        "около",
+        "и т.д",
+        "и тп",
+        "по возможности",
+    ]
 
     markers: list[str] = []
     injection_hits = 0
@@ -109,9 +145,9 @@ def compute_prompt_security_metrics(content: str) -> dict[str, float | list[str]
 
     ambiguity_hits = sum(lowered.count(marker) for marker in ambiguity_markers)
 
-    injection_risk = min(100.0, round(20.0 + injection_hits * 18.0, 2)) if injection_hits else 8.0
-    contradiction_risk = min(100.0, round(15.0 + contradiction_hits * 22.0, 2)) if contradiction_hits else 6.0
-    ambiguity_risk = min(100.0, round(10.0 + ambiguity_hits * 9.0, 2)) if ambiguity_hits else 5.0
+    injection_risk = min(100.0, round(20.0 + injection_hits * 18.0, 2)) if injection_hits else 0.0
+    contradiction_risk = min(100.0, round(15.0 + contradiction_hits * 22.0, 2)) if contradiction_hits else 0.0
+    ambiguity_risk = min(100.0, round(10.0 + ambiguity_hits * 9.0, 2)) if ambiguity_hits else 0.0
 
     return {
         "injection_risk": injection_risk,

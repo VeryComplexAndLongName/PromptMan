@@ -106,10 +106,25 @@ button.ghost { background: transparent; color: var(--accent-2); border: 1px soli
 
 .dropdown > summary {
   list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
 }
 
 .dropdown > summary::-webkit-details-marker {
   display: none;
+}
+
+.dropdown > summary::after {
+  content: "▾";
+  font-size: 0.82rem;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+.dropdown[open] > summary::after {
+  content: "▴";
 }
 
 .dropdown[open] > summary {
