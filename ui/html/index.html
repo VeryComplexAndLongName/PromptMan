@@ -3,17 +3,517 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PromptMan</title>
+    <title>PromptMan Conversations</title>
     <link rel="icon" type="image/png" sizes="240x240" href="/P_240x240.png" />
-    <link rel="apple-touch-icon" href="/P_240x240.png" />
     <link rel="stylesheet" href="/ui/css/fonts.css?v=1" />
-    <link rel="stylesheet" href="/ui/css/app.css?v=16" />
+    <link rel="stylesheet" href="/ui/css/app.css?v=conversation-3" />
   </head>
   <body>
-    <div id="app" class="container"></div>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>PromptMan Studio</h1>
+          <p class="muted">Conversation-first · <span id="productVersion">v0.0.0</span></p>
+        </div>
+        <div class="status-popover" id="statusPopover">
+          <button id="statusToggleBtn" class="status-toggle" aria-expanded="false" aria-controls="statusMenu">
+            <span id="statusDot" class="status-dot"></span>
+            <span id="userStatusCompact">Guest</span>
+          </button>
+          <div id="statusMenu" class="status-menu" hidden>
+            <div class="status-tabs" role="tablist" aria-label="User menu tabs">
+              <button id="statusTabAuthBtn" class="status-tab is-active" data-status-target="statusPanelAuth" role="tab" aria-selected="true">Login / Logout</button>
+              <button id="statusTabPasswordBtn" class="status-tab" data-status-target="statusPanelPassword" role="tab" aria-selected="false">Change password</button>
+            </div>
 
-    <script src="/ui/js/vue.global.prod.js"></script>
-    <script src="/ui/js/marked.min.js"></script>
-    <script src="/ui/js/app.js?v=52"></script>
+            <section id="statusPanelAuth" class="status-panel" role="tabpanel">
+              <p class="status-title">Current user</p>
+              <p id="userStatusText" class="muted">Not authenticated</p>
+              <div class="mini-form">
+                <label>
+                  Username
+                  <input id="menuUsername" type="text" placeholder="admin" autocomplete="username" />
+                </label>
+                <label>
+                  Password
+                  <input id="menuPassword" type="password" placeholder="admin" autocomplete="current-password" />
+                </label>
+                <div class="actions">
+                  <button id="loginBtn">Login</button>
+                  <button id="bootstrapBtn" class="secondary">Bootstrap admin</button>
+                  <button id="logoutBtn" class="ghost">Logout</button>
+                </div>
+                <p id="authMenuStatus" class="muted"></p>
+              </div>
+            </section>
+
+            <section id="statusPanelPassword" class="status-panel" role="tabpanel" hidden>
+              <div class="mini-form">
+                <label>
+                  Current password
+                  <input id="pwdCurrent" type="password" placeholder="Current password" autocomplete="current-password" />
+                </label>
+                <label>
+                  New password
+                  <input id="pwdNew" type="password" placeholder="New password" autocomplete="new-password" />
+                </label>
+                <button id="changePasswordBtn" class="secondary">Change password</button>
+                <p id="changePasswordStatus" class="muted"></p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </header>
+
+      <section class="card workspace-card">
+        <nav class="tabs" role="tablist" aria-label="Conversation workspace tabs">
+          <button class="tab is-active" id="tabCreateThread" data-target="panelCreateThread" role="tab" aria-selected="true">Current thread</button>
+          <button class="tab" id="tabThreads" data-target="panelThreads" role="tab" aria-selected="false">Threads</button>
+          <button class="tab" id="tabPromptVersions" data-target="panelPromptVersions" role="tab" aria-selected="false">Prompt versions</button>
+          <button class="tab" id="tabPlugins" data-target="panelPlugins" role="tab" aria-selected="false">Plugins</button>
+          <button class="tab" id="tabSettings" data-target="panelSettings" role="tab" aria-selected="false" hidden>Settings</button>
+        </nav>
+
+        <section id="panelCreateThread" class="tab-panel" role="tabpanel">
+          <h2>Create thread</h2>
+          <label>Project<input id="threadProject" type="text" placeholder="demo" /></label>
+          <label>Title<input id="threadTitle" type="text" placeholder="Conversation title" /></label>
+          <label>Source<input id="threadSource" type="text" value="manual" /></label>
+          <button id="createThreadBtn">Create thread</button>
+          <p id="threadCreateStatus" class="muted"></p>
+
+          <hr />
+
+          <h2>Import JSON</h2>
+          <label>Payload
+            <textarea id="jsonPayload" rows="8" placeholder='{"project":"demo","title":"Import","messages":[{"role":"user","content":"Hello"},{"role":"assistant","content":"Hi"}]}'></textarea>
+          </label>
+          <button id="importJsonBtn" class="secondary">Import JSON</button>
+
+          <h2>Import text</h2>
+          <label>Project<input id="textProject" type="text" value="demo" /></label>
+          <label>Title<input id="textTitle" type="text" value="Text import" /></label>
+          <label>Delimiter<input id="textDelimiter" type="text" value="=== TURN ===" /></label>
+          <label>Text
+            <textarea id="textPayload" rows="8" placeholder="USER: hi
+=== TURN ===
+ASSISTANT: hello"></textarea>
+          </label>
+          <button id="importTextBtn" class="secondary">Import text</button>
+          <p id="importStatus" class="muted"></p>
+        </section>
+
+        <section id="panelThreads" class="tab-panel" role="tabpanel" hidden>
+          <div class="panel-toolbar">
+            <button id="refreshThreadsBtn" class="ghost">Refresh threads list</button>
+          </div>
+          <div class="threads-layout">
+            <article class="subcard">
+              <h2>Threads</h2>
+              <label>Project filter<input id="threadFilterProject" type="text" placeholder="optional" /></label>
+              <ul id="threadsList" class="thread-list scroll-list"></ul>
+            </article>
+
+            <article class="subcard groupbox">
+              <h2 id="threadDetailsTitle">Thread details</h2>
+              <p id="threadDetailsHint" class="muted">Select a thread to view messages and analysis.</p>
+              <div class="actions">
+                <button id="refreshMessagesBtn" class="ghost">Refresh messages</button>
+                <details class="dropdown" id="threadAnalyzeMenu">
+                  <summary class="ghost">Analyze</summary>
+                  <div class="dropdown-menu">
+                    <button id="analyzeThreadChainBtn" class="dropdown-item">Analyze current chain</button>
+                    <button id="orchestrateAnalyzeThreadChainBtn" class="dropdown-item">Prompt Orchestrator improve + analyze</button>
+                  </div>
+                </details>
+                <button id="threadChartLabelModeBtn" class="ghost">Labels: Smart</button>
+                <button id="exportThreadAnalysisPdfBtn" class="secondary">Export analysis PDF</button>
+              </div>
+              <div id="analyzeOutput" class="analysis-report"></div>
+              <div id="threadAnalysisLog" class="analysis-report"></div>
+
+              <h3>Add message</h3>
+              <label>Role
+                <select id="newMessageRole">
+                  <option value="user">user</option>
+                  <option value="assistant">assistant</option>
+                  <option value="system">system</option>
+                  <option value="tool">tool</option>
+                </select>
+              </label>
+              <label>Content<textarea id="newMessageContent" rows="4"></textarea></label>
+              <button id="appendMessageBtn">Append message</button>
+
+              <h3>Messages</h3>
+              <ul id="messagesList" class="message-list"></ul>
+            </article>
+          </div>
+        </section>
+
+        <section id="panelPromptVersions" class="tab-panel" role="tabpanel" hidden>
+          <div class="panel-toolbar">
+            <button id="refreshPromptChainsBtn" class="ghost">Refresh prompt chains list</button>
+          </div>
+          <div class="threads-layout">
+            <article class="subcard">
+              <h2>Prompt chains</h2>
+              <label>Project filter<input id="promptChainProjectFilter" type="text" placeholder="optional" /></label>
+              <ul id="promptChainsList" class="thread-list scroll-list"></ul>
+
+              <hr />
+
+              <h3>Create chain (v1)</h3>
+              <label>Project<input id="promptChainProject" type="text" placeholder="demo" /></label>
+              <label>Name<input id="promptChainName" type="text" placeholder="checkout-flow" /></label>
+              <label>Description<input id="promptChainDescription" type="text" placeholder="Optional" /></label>
+              <label>Initial content<textarea id="promptChainInitialContent" rows="5" placeholder="Base prompt content"></textarea></label>
+              <label>Notes<input id="promptChainInitialNotes" type="text" placeholder="Optional" /></label>
+              <button id="createPromptChainBtn">Create chain</button>
+              <p id="promptChainCreateStatus" class="muted"></p>
+            </article>
+
+            <article class="subcard groupbox">
+              <h2 id="promptChainDetailsTitle">Prompt chain details</h2>
+              <p id="promptChainDetailsHint" class="muted">Select a chain to inspect versions and analysis.</p>
+              <div class="actions">
+                <button id="refreshPromptVersionsBtn" class="ghost">Refresh versions</button>
+                <details class="dropdown" id="promptChainAnalyzeMenu">
+                  <summary class="ghost">Analyze</summary>
+                  <div class="dropdown-menu">
+                    <button id="analyzePromptChainBtn" class="dropdown-item">Analyze current chain</button>
+                    <button id="previewPromptOrchestratorBtn" class="dropdown-item">Prompt Orchestrator preview</button>
+                  </div>
+                </details>
+                <button id="exportPromptAnalysisPdfBtn" class="secondary">Export analysis PDF</button>
+              </div>
+
+              <h3>Analysis report</h3>
+              <pre id="promptChainAnalysisSummary" class="json-box"></pre>
+              <div id="promptChainTrendChart" class="trend-chart"></div>
+              <div class="table-wrap">
+                <table class="metrics-table" id="promptChainMetricsTable">
+                  <thead>
+                    <tr>
+                      <th>Version</th>
+                      <th>Tokens</th>
+                      <th>Reliability</th>
+                      <th>Cache hit %</th>
+                      <th>Injection risk</th>
+                      <th>Contradiction risk</th>
+                      <th>Ambiguity risk</th>
+                      <th>Delta tokens</th>
+                      <th>Delta reliability</th>
+                      <th>Delta cache %</th>
+                      <th>Delta injection risk</th>
+                      <th>Delta contradiction risk</th>
+                      <th>Delta ambiguity risk</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+
+              <h3>Prompt Orchestrator preview</h3>
+              <div id="promptOrchestratorPreview" class="analysis-report"></div>
+              <div id="promptOrchestratorLog" class="analysis-report"></div>
+
+              <h3>Versions</h3>
+              <ul id="promptVersionsList" class="thread-list"></ul>
+
+              <h3>Create next version</h3>
+              <label>Content<textarea id="promptVersionContent" rows="5" placeholder="Updated prompt content"></textarea></label>
+              <label>Notes<input id="promptVersionNotes" type="text" placeholder="What changed" /></label>
+              <button id="createPromptVersionBtn">Add version</button>
+              <p id="promptVersionCreateStatus" class="muted"></p>
+
+              <h3>Selected version analysis</h3>
+              <div id="promptVersionAnalysis" class="analysis-report"></div>
+
+              <h3>Selected version content (Markdown)</h3>
+              <article id="promptVersionMarkdown" class="markdown-box"></article>
+
+              <h3>Test runs</h3>
+              <div class="actions">
+                <button id="runPromptTestBtn" class="secondary">Run test</button>
+                <button id="refreshPromptTestsBtn" class="ghost">Refresh runs</button>
+                <button id="exportPromptTestRunJsonBtn" class="ghost">Export selected JSON</button>
+                <button id="exportPromptTestRunPdfBtn" class="secondary">Export selected PDF</button>
+              </div>
+              <p id="promptTestRunStatus" class="muted"></p>
+              <ul id="promptTestRunsList" class="thread-list scroll-list"></ul>
+              <div id="promptTestRunDetails" class="analysis-report"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="panelPlugins" class="tab-panel" role="tabpanel" hidden>
+          <div class="panel-toolbar">
+            <button id="refreshPluginsBtn" class="ghost">Refresh plugins</button>
+          </div>
+          <article class="subcard groupbox">
+            <h2>Installed plugins</h2>
+            <p id="pluginsStatus" class="muted">Open this tab to load plugin catalog.</p>
+            <div class="table-wrap plugins-table-wrap">
+              <table class="metrics-table" id="pluginsTable">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Version</th>
+                    <th>Description</th>
+                    <th>Controls</th>
+                    <th>State</th>
+                    <th>Signature</th>
+                    <th>Endpoints</th>
+                    <th>Source</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </article>
+        </section>
+
+        <dialog id="pluginModalDialog" class="plugin-modal-dialog">
+          <article class="plugin-modal-card">
+            <header class="plugin-modal-header">
+              <div>
+                <h3 id="pluginModalTitle">Plugin modal</h3>
+                <p id="pluginModalDescription" class="muted"></p>
+              </div>
+              <button id="pluginModalCloseIconBtn" class="ghost" type="button">Close</button>
+            </header>
+            <section class="plugin-modal-body">
+              <article id="pluginModalMarkdown" class="markdown-box"></article>
+              <p id="pluginModalStatus" class="analysis-note"></p>
+              <div id="pluginModalControls" class="plugin-controls-grid"></div>
+              <div class="table-wrap">
+                <pre id="pluginModalLogs" class="log-output"></pre>
+              </div>
+            </section>
+            <footer class="plugin-modal-footer actions">
+              <button id="pluginModalStopBtn" class="secondary" type="button">Stop</button>
+              <button id="pluginModalCloseBtn" class="ghost" type="button">Close</button>
+            </footer>
+          </article>
+        </dialog>
+
+        <section id="panelSettings" class="tab-panel" role="tabpanel" hidden>
+          <article class="subcard">
+            <h2>Admin settings</h2>
+            <p class="muted">This tab is visible only for admins and manages global runtime config.</p>
+            <button id="refreshSettingsBtn" class="ghost">Reload settings</button>
+
+            <nav class="settings-tabs" role="tablist" aria-label="Settings groups">
+              <button class="settings-tab is-active" data-settings-target="settingsPanelLlm" role="tab" aria-selected="true">LLM Settings</button>
+              <button class="settings-tab" data-settings-target="settingsPanelRuntime" role="tab" aria-selected="false">Other runtime settings</button>
+              <button class="settings-tab" data-settings-target="settingsPanelUsers" role="tab" aria-selected="false">Create Users</button>
+            </nav>
+
+            <section id="settingsPanelLlm" class="settings-panel" role="tabpanel">
+              <h3>Optimizer LLM</h3>
+              <div class="settings-grid">
+                <label>
+                  OPTIMIZER_PROVIDER
+                  <select id="optimizerProvider"></select>
+                </label>
+                <label>
+                  OPTIMIZER_MODEL
+                  <select id="optimizerModel"></select>
+                </label>
+                <label>
+                  OPTIMIZER_BASE_URL
+                  <input id="optimizerBaseUrl" type="text" placeholder="Provider default URL" />
+                </label>
+                <label>
+                  OPTIMIZER_BACKEND
+                  <select id="optimizerBackend"></select>
+                </label>
+                <label>
+                  OPTIMIZER_API_TOKEN
+                  <input id="optimizerApiToken" type="password" placeholder="Enter new token to update" autocomplete="new-password" />
+                </label>
+              </div>
+              <div class="actions">
+                <button id="saveOptimizerSettingsBtn" class="secondary">Save optimizer settings</button>
+                <button id="reloadOptimizerModelsBtn" class="ghost">Reload models</button>
+              </div>
+
+              <h3>Prompt compression LLM</h3>
+              <p class="muted">Эти настройки используются для сжатия промптов.</p>
+              <div class="settings-grid">
+                <label>
+                  PROMPT_COMPRESSION_PROVIDER
+                  <select id="compressionProvider"></select>
+                </label>
+                <label>
+                  PROMPT_COMPRESSION_MODEL
+                  <select id="compressionModel"></select>
+                </label>
+                <label>
+                  PROMPT_COMPRESSION_BASE_URL
+                  <input id="compressionBaseUrl" type="text" placeholder="Provider default URL" />
+                </label>
+                <label>
+                  PROMPT_COMPRESSION_BACKEND
+                  <select id="compressionBackend"></select>
+                </label>
+                <label>
+                  PROMPT_COMPRESSION_API_TOKEN
+                  <input id="compressionApiToken" type="password" placeholder="Enter new token to update" autocomplete="new-password" />
+                </label>
+              </div>
+              <div class="actions">
+                <button id="saveCompressionSettingsBtn" class="secondary">Save compression settings</button>
+                <button id="reloadCompressionModelsBtn" class="ghost">Reload models</button>
+              </div>
+
+              <h3>Test LLM / Test RAG</h3>
+              <p class="muted">Эти настройки используются тестовыми прогонами prompt versions и симуляциями.</p>
+              <div class="settings-grid">
+                <label>
+                  TEST_LLM_PROVIDER
+                  <select id="testLlmProvider"></select>
+                </label>
+                <label>
+                  TEST_LLM_MODEL
+                  <select id="testLlmModel"></select>
+                </label>
+                <label>
+                  TEST_LLM_BASE_URL
+                  <input id="testLlmBaseUrl" type="text" placeholder="http://127.0.0.1:11434" />
+                </label>
+                <label>
+                  TEST_LLM_TIMEOUT_SECONDS
+                  <input id="testLlmTimeoutSeconds" type="number" min="3" max="600" step="1" />
+                </label>
+                <label>
+                  TEST_LLM_USE_OPTIMIZER_FALLBACK
+                  <select id="testLlmUseOptimizerFallback">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label>
+                  TEST_LLM_API_TOKEN
+                  <input id="testLlmApiToken" type="password" placeholder="Enter new token to update" autocomplete="new-password" />
+                </label>
+                <label>
+                  TEST_RAG_ENABLED
+                  <select id="testRagEnabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label>
+                  TEST_RAG_TOP_K
+                  <input id="testRagTopK" type="number" min="1" max="50" step="1" />
+                </label>
+                <label>
+                  TEST_RAG_SOURCE_PATH
+                  <input id="testRagSourcePath" type="text" placeholder="simulations/rag_knowledge.md" />
+                </label>
+              </div>
+              <div class="actions">
+                <button id="saveTestLlmSettingsBtn" class="secondary">Save test settings</button>
+                <button id="reloadTestLlmModelsBtn" class="ghost">Reload test models</button>
+              </div>
+
+              <h3>LLM auto setup</h3>
+              <p class="muted">Apply one provider to all LLM settings. In intelligent mode lightweight model is used for compression, stronger model for optimizer/tests.</p>
+              <div class="settings-grid">
+                <label>
+                  Provider
+                  <select id="llmAutoProvider"></select>
+                </label>
+                <label>
+                  Mode
+                  <select id="llmAutoMode">
+                    <option value="intelligent">intelligent</option>
+                    <option value="uniform">uniform</option>
+                  </select>
+                </label>
+                <label>
+                  Base URL (optional)
+                  <input id="llmAutoBaseUrl" type="text" placeholder="Provider default URL" />
+                </label>
+                <label>
+                  Preferred model (optional)
+                  <input id="llmAutoPreferredModel" type="text" placeholder="Use exact model id if needed" />
+                </label>
+                <label>
+                  API token (optional)
+                  <input id="llmAutoApiToken" type="password" placeholder="For OpenAI-compatible providers" autocomplete="new-password" />
+                </label>
+              </div>
+              <div class="actions">
+                <button id="previewLlmAutoBtn" class="ghost">Preview auto setup</button>
+                <button id="applyLlmAutoBtn" class="secondary">Apply to all LLM settings</button>
+              </div>
+              <pre id="llmAutoResult" class="json-box"></pre>
+            </section>
+
+            <section id="settingsPanelRuntime" class="settings-panel" role="tabpanel" hidden>
+              <h3>Other runtime settings</h3>
+              <div class="table-wrap">
+                <table class="metrics-table" id="settingsTable">
+                  <thead>
+                    <tr>
+                      <th>Key</th>
+                      <th>Value</th>
+                      <th>Save</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section id="settingsPanelUsers" class="settings-panel" role="tabpanel" hidden>
+              <h3>Create user</h3>
+              <div class="settings-grid">
+                <label>
+                  Username
+                  <input id="newUserUsername" type="text" placeholder="new_user" />
+                </label>
+                <label>
+                  Password
+                  <input id="newUserPassword" type="password" placeholder="Strong password" autocomplete="new-password" />
+                </label>
+                <label>
+                  Role
+                  <select id="newUserRole"></select>
+                </label>
+              </div>
+              <div class="actions">
+                <button id="createUserBtn" class="secondary">Create user</button>
+                <button id="refreshUsersBtn" class="ghost">Refresh users</button>
+              </div>
+              <h3>Current users</h3>
+              <div class="table-wrap">
+                <table class="metrics-table" id="usersTable">
+                  <thead>
+                    <tr>
+                      <th>Username</th>
+                      <th>Role</th>
+                      <th>Active</th>
+                      <th>Save</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </section>
+            <p id="settingsStatus" class="muted"></p>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="/ui/js/marked.min.js?v=1"></script>
+    <script src="/ui/js/app.js?v=conversation-11"></script>
   </body>
 </html>

@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
+
 from sqlalchemy.orm import Session
+
 from models.models import GlobalConfig
 
 

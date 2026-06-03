@@ -1,13 +1,14 @@
 import asyncio
 import base64
 import json
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import FastAPI
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi import FastAPI, HTTPException
 
 import app_settings
 from plugin_engine import PluginEngine, PluginModalControlUpdateRequest, PluginModalStartRequest
@@ -233,7 +234,7 @@ def test_plugin_is_deactivated_after_three_runtime_failures(tmp_path: Path):  # 
     request = engine._synthetic_request("/v1/plugins/broken_runtime/boom", "POST")
     admin_user = SimpleNamespace(role="admin")
     for _ in range(3):
-        try:
+        with suppress(RuntimeError):
             asyncio.run(
                 engine.execute_plugin_endpoint(
                     "broken_runtime",
@@ -243,8 +244,6 @@ def test_plugin_is_deactivated_after_three_runtime_failures(tmp_path: Path):  # 
                     payload={},
                 )
             )
-        except RuntimeError:
-            pass
 
     assert record.available is False
     assert record.state == "unavailable"
@@ -342,7 +341,7 @@ def test_health_check_recovers_unavailable_plugin_without_reload(tmp_path: Path)
     request = engine._synthetic_request("/v1/plugins/recoverable_runtime/boom", "POST")
     admin_user = SimpleNamespace(role="admin")
     for _ in range(3):
-        try:
+        with suppress(RuntimeError):
             asyncio.run(
                 engine.execute_plugin_endpoint(
                     "recoverable_runtime",
@@ -352,8 +351,6 @@ def test_health_check_recovers_unavailable_plugin_without_reload(tmp_path: Path)
                     payload={},
                 )
             )
-        except RuntimeError:
-            pass
 
     assert record.state == "unavailable"
     assert record.active_routes == []
@@ -597,7 +594,7 @@ def test_plugin_modal_session_supports_control_updates_and_stop(tmp_path: Path):
     assert stopped_session.stop_requested is True
     assert stopped_session.state == "stopped"
 
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         asyncio.run(
             engine.update_modal_control("modal_probe", session.session_id, "text_input", update_snapshot, admin_user, update_request)
         )

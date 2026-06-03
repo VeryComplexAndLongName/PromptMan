@@ -1,3382 +1,3115 @@
-const { createApp, ref, computed, onMounted, onBeforeUnmount } = Vue;
-
-marked.setOptions({ breaks: true, gfm: true });
-const md        = (text) => marked.parse(text || "");
-const parseTags = (raw)  => raw.split(",").map((t) => t.trim()).filter(Boolean);
-const tagsToStr = (tags) => tags.join(", ");
-const key       = (p)   => p.project + "/" + p.name;
 const AUTH_TOKEN_STORAGE_KEY = "promptman.access_token";
 const REFRESH_TOKEN_STORAGE_KEY = "promptman.refresh_token";
-const ACCESS_TOKEN_EXPIRES_AT_STORAGE_KEY = "promptman.access_token_expires_at";
-const NEXT_REFRESH_AT_STORAGE_KEY = "promptman.next_refresh_at";
-const PLUGIN_TAG_MATCH_MODE_STORAGE_KEY = "promptman.plugin_tag_match_mode";
-const PLUGIN_ROUTES_OPEN_STORAGE_KEY = "promptman.plugin_routes_open";
-const PLUGIN_FILTER_BAR_OPEN_STORAGE_KEY = "promptman.plugin_filter_bar_open";
-const emptyPromptData = () => ({
-  role: "",
-  task: "",
-  context: "",
-  constraints: "",
-  output_format: "",
-  examples: "",
-});
-const defaultOptimizeConfig = () => ({
-  llm_provider: "ollama",
-  llm_model: "qwen2.5:0.5b",
-  llm_base_url: "http://127.0.0.1:11434",
-  llm_timeout_seconds: 300,
-  llm_api_token: "",
-  effective_llm_provider: "ollama",
-  effective_llm_model: "qwen2.5:0.5b",
-  effective_llm_base_url: "http://127.0.0.1:11434",
-  effective_llm_timeout_seconds: 300,
-  effective_has_llm_api_token: false,
-});
-const emptyUserForm = () => ({
-  username: "",
-  password: "",
-  role: "developer",
-  projects: [],
-  is_active: true,
-});
-const emptyProjectForm = () => ({
-  name: "",
-});
-const defaultUserRoleOptions = ["admin", "developer"];
-const initialLlmProviderConfigs = {
-  ollama: {
-    label: "Ollama (Local)",
-    baseUrl: "http://127.0.0.1:11434",
-    requiresApiToken: false,
-    models: [
-      "qwen2.5:3b-instruct-q4_K_M",
-      "qwen2.5:0.5b",
-      "qwen3:4b",
-      "llama3.2:1b",
-      "llama3.2:latest",
-      "llama3.1:latest",
-      "deepseek-r1:latest",
-      "codellama:latest",
-    ],
-  },
-  openai: {
-    label: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    requiresApiToken: true,
-    models: ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
-  },
-  anthropic: {
-    label: "Anthropic Claude",
-    baseUrl: "https://api.anthropic.com",
-    requiresApiToken: true,
-    models: ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
-  },
+
+const state = {
+  accessToken: localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "",
+  refreshToken: localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) || "",
+  currentUser: null,
+  plugins: [],
+  pluginControlValues: {},
+  activePluginModal: null,
+  selectedThreadId: null,
+  threadMessages: [],
+  threadAnalysisMessages: [],
+  threadAnalysisReport: null,
+  threadAnalysisLog: null,
+  threadChartLabelMode: "smart",
+  selectedPromptChainId: null,
+  selectedPromptVersionNo: null,
+  promptChainAnalysisPoints: [],
+  promptOrchestratorPreview: null,
+  promptTestRuns: [],
+  selectedPromptTestRunId: null,
+  settings: {},
+  providerMeta: { providers: [], backends: [] },
+  roleOptions: [],
 };
 
-// Build markdown from decomposed fields
-const buildPromptMarkdown = (fields) => {
-  const parts = [];
-  if (fields.role?.trim())           parts.push(`**Role:** ${fields.role}`);
-  if (fields.task?.trim())           parts.push(`**Task:** ${fields.task}`);
-  if (fields.constraints?.trim())    parts.push(`**Constraints:** ${fields.constraints}`);
-  if (fields.output_format?.trim())  parts.push(`**Output format:** ${fields.output_format}`);
-  if (fields.examples?.trim())       parts.push(`**Examples:** ${fields.examples}`);
-  if (fields.context?.trim())        parts.push(`**Context:** ${fields.context}`);
-  return parts.join("\n\n");
-};
+const TOKEN_PLACEHOLDER = "********";
 
-const readJsonStorage = (storageKey, fallback) => {
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
-  } catch (_err) {
-    return fallback;
+const $ = (id) => document.getElementById(id);
+
+let refreshTokenInFlight = null;
+
+async function refreshAccessToken() {
+  if (!state.refreshToken) {
+    throw new Error("Refresh token is missing");
   }
-};
 
-const normalizePluginTagMatchMode = (value) => (String(value || "").toLowerCase() === "and" ? "and" : "or");
-
-createApp({
-  setup() {
-    /* app meta */
-    const appVersion = ref("");
-
-    /* auth */
-    const authReady = ref(false);
-    const authToken = ref(window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "");
-    const refreshToken = ref(window.localStorage.getItem(REFRESH_TOKEN_STORAGE_KEY) || "");
-    const accessTokenExpiresAt = ref(Number(window.localStorage.getItem(ACCESS_TOKEN_EXPIRES_AT_STORAGE_KEY) || 0));
-    const nextRefreshAt = ref(Number(window.localStorage.getItem(NEXT_REFRESH_AT_STORAGE_KEY) || 0));
-    const clockNow = ref(Date.now());
-    const currentUser = ref(null);
-    const authMode = ref("login");
-    const authForm = ref({ username: "", password: "" });
-    const authError = ref("");
-    const authStatus = ref("");
-    const authBusy = ref(false);
-    const authBootstrapRequired = ref(false);
-
-    /* tabs */
-    const activeTab = ref("browse");
-
-    /* create form */
-    const form         = ref({ name: "", project: "", tags: "", role: "", task: "", context: "", constraints: "", output_format: "", examples: "" });
-    const createStatus = ref("");
-
-    /* browse */
-    const items         = ref([]);
-    const filterProject = ref("");
-    const filterTag     = ref("");
-    const browsePage    = ref(1);
-    const browsePageSize = ref(10);
-    const browseTotalItems = ref(0);
-    const browseSortBy = ref("updated_at");
-    const browseSortOrder = ref("desc");
-
-    /* expanded prompt state */
-    const expandedKey       = ref(null);
-    const expandedVersions  = ref([]);
-    const openVersionKey    = ref(null);
-    const editTagsMode      = ref(false);
-    const editTagsStr       = ref("");
-    const newVersionRole    = ref("");
-    const newVersionTask    = ref("");
-    const newVersionContext = ref("");
-    const newVersionConstraints = ref("");
-    const newVersionOutputFormat = ref("");
-    const newVersionExamples = ref("");
-    const saveStatus        = ref("");
-    const deleteStatus      = ref("");
-    const newVersionEditorOpen = ref(false);
-
-    /* optimizer */
-    const createOptimizeMenuOpen = ref(false);
-    const browseOptimizeMenuKey = ref(null);
-    const optimizerModalOpen = ref(false);
-    const optimizerLoading = ref(false);
-    const optimizerError = ref("");
-    const optimizerStatus = ref("");
-    const optimizerMode = ref("optimizer");
-    const optimizerLogs = ref([]);
-    const optimizerEngine = ref("");
-    const optimizerNotes = ref([]);
-    const optimizerElapsedSeconds = ref(null);
-    const optimizedMarkdown = ref("");
-    const optimizedDraft = ref(emptyPromptData());
-    const optimizeInputSource = ref("create");
-    const optimizeTargetPrompt = ref(null);
-    const optimizeEndpoint = ref("/v1/optimize");
-    const optimizeConfig = ref(defaultOptimizeConfig());
-    const optimizeConfigStatus = ref("");
-    const llmProviderConfigs = ref(structuredClone(initialLlmProviderConfigs));
-    const llmProviderOptions = computed(() => Object.keys(llmProviderConfigs.value));
-    const defaultLlmModelsByProvider = computed(() =>
-      Object.fromEntries(Object.entries(llmProviderConfigs.value).map(([key, config]) => [key, config.models]))
-    );
-    const availableLlmModels = ref([...(initialLlmProviderConfigs.ollama?.models || [])]);
-    const llmModelsLoading = ref(false);
-    const llmModelsLoadError = ref("");
-    const activeOptimizationJobId = ref("");
-    let optimizerPollTimerId = null;
-
-    /* admin */
-    const roleOptions = ref([...defaultUserRoleOptions, "viewer"]);
-    const projects = ref([]);
-    const projectsLoading = ref(false);
-    const projectsStatus = ref("");
-    const newProjectForm = ref(emptyProjectForm());
-    const editingProjectId = ref(null);
-    const editProjectForm = ref(emptyProjectForm());
-    const users = ref([]);
-    const usersLoading = ref(false);
-    const usersStatus = ref("");
-    const newUserForm = ref(emptyUserForm());
-    const editingUserId = ref(null);
-    const editUserForm = ref(emptyUserForm());
-    const globalConfigEntries = ref([]);
-    const globalConfigLoading = ref(false);
-    const globalConfigStatus = ref("");
-
-    /* plugins */
-    const plugins = ref([]);
-    const pluginsLoading = ref(false);
-    const pluginsStatus = ref("");
-    const pluginControlValues = ref({});
-    const pluginResponses = ref({});
-    const pluginDiagnostics = ref({});
-    const pluginDiagnosticsLoading = ref({});
-    const pluginDiagnosticsOpen = ref({});
-    const pluginModalOpen = ref(false);
-    const pluginModalLoading = ref(false);
-    const pluginModalError = ref("");
-    const pluginModalStatus = ref("");
-    const pluginModalSession = ref(null);
-    const pluginModalPluginName = ref("");
-    const pluginModalEndpointName = ref("");
-    const pluginModalBackdropArmed = ref(false);
-    const pluginModalActiveTab = ref("");
-    const pluginNameFilter = ref("");
-    const pluginTagFilters = ref([]);
-    const pluginTagMatchMode = ref(normalizePluginTagMatchMode(window.localStorage.getItem(PLUGIN_TAG_MATCH_MODE_STORAGE_KEY)));
-    const pluginRoutesOpen = ref(readJsonStorage(PLUGIN_ROUTES_OPEN_STORAGE_KEY, {}));
-    const pluginFilterBarOpen = ref(window.localStorage.getItem(PLUGIN_FILTER_BAR_OPEN_STORAGE_KEY) === "true");
-
-    /* change password */
-    const changePasswordForm = ref({ current_password: "", new_password: "", confirm_password: "" });
-    const changePasswordStatus = ref("");
-    const changePasswordBusy = ref(false);
-
-    const isAuthenticated = computed(() => !!currentUser.value);
-    const isAdmin = computed(() => currentUser.value?.role === "admin");
-    const isViewer = computed(() => currentUser.value?.role === "viewer");
-    const canViewAdmin = computed(() => currentUser.value?.role === "admin");
-    const canWrite = computed(() => !!currentUser.value && currentUser.value.role !== "viewer");
-    const optimizerTimeoutSeconds = computed(() =>
-      Number(optimizeConfig.value.effective_llm_timeout_seconds || optimizeConfig.value.llm_timeout_seconds || 0)
-    );
-    const optimizerElapsedPercent = computed(() => {
-      if (optimizerElapsedSeconds.value === null || optimizerTimeoutSeconds.value <= 0) {
-        return null;
-      }
-      return (optimizerElapsedSeconds.value / optimizerTimeoutSeconds.value) * 100;
-    });
-    const optimizerElapsedSeverity = computed(() => {
-      if (optimizerElapsedPercent.value === null) return "ok";
-      if (optimizerElapsedPercent.value >= 100) return "error";
-      if (optimizerElapsedPercent.value >= 80) return "warn";
-      return "ok";
-    });
-    const availableProjectNames = computed(() => projects.value.map((project) => project.name));
-    const currentUserProjectsLabel = computed(() => {
-      if (!currentUser.value) return "";
-      if (["admin", "viewer"].includes(currentUser.value.role)) return "All projects";
-      return (currentUser.value.projects || []).length ? currentUser.value.projects.join(", ") : "No assigned projects";
-    });
-
-    const getPluginTags = (plugin) => {
-      const tags = [];
-      const state = String(plugin?.state || "").trim().toLowerCase();
-      if (state) tags.push(state);
-      if (plugin?.available) tags.push("available");
-      if (!plugin?.compatible) tags.push("incompatible");
-      if (plugin?.signature_status) tags.push(String(plugin.signature_status).toLowerCase());
-      if ((plugin?.health_failures || 0) > 0) tags.push("health-failed");
-      if (plugin?.runtime_failures && Object.keys(plugin.runtime_failures).length) tags.push("runtime-failed");
-      if ((plugin?.active_routes || []).length) tags.push("running");
-      if ((plugin?.ui_controls || []).length) tags.push("ui");
-      if ((plugin?.hooks || []).length) tags.push("hooks");
-      if ((plugin?.endpoints || []).some((endpoint) => !!endpoint.launches_modal)) tags.push("modal");
-      return [...new Set(tags)];
-    };
-
-    const availablePluginTags = computed(() => {
-      const tags = new Set();
-      plugins.value.forEach((plugin) => {
-        getPluginTags(plugin).forEach((tag) => tags.add(tag));
-      });
-      return Array.from(tags).sort((left, right) => left.localeCompare(right));
-    });
-
-    const pluginTagFilterGroups = computed(() => {
-      const available = availablePluginTags.value;
-      const assigned = new Set();
-      const groupDefinitions = [
-        { key: "status", label: "Status", tags: ["running", "available", "incompatible", "health-failed", "runtime-failed"] },
-        { key: "signature", label: "Signature", tags: ["verified", "unsigned", "invalid"] },
-        { key: "capabilities", label: "Capabilities", tags: ["ui", "hooks", "modal"] },
-      ];
-
-      const groups = groupDefinitions.map((group) => {
-        const tags = group.tags.filter((tag) => available.includes(tag));
-        tags.forEach((tag) => assigned.add(tag));
-        return { ...group, tags };
-      }).filter((group) => group.tags.length);
-
-      const otherTags = available.filter((tag) => !assigned.has(tag));
-      if (otherTags.length) {
-        groups.push({ key: "other", label: "Other", tags: otherTags });
-      }
-      return groups;
-    });
-
-    const filteredPlugins = computed(() => {
-      const nameNeedle = String(pluginNameFilter.value || "").trim().toLowerCase();
-      const selectedTags = new Set((pluginTagFilters.value || []).map((tag) => String(tag || "").trim().toLowerCase()).filter(Boolean));
-      return plugins.value.filter((plugin) => {
-        const nameMatches = !nameNeedle || String(plugin?.name || "").toLowerCase().includes(nameNeedle);
-        if (!nameMatches) return false;
-        if (!selectedTags.size) return true;
-        const pluginTags = new Set(getPluginTags(plugin));
-        if (pluginTagMatchMode.value === "and") {
-          for (const tag of selectedTags) {
-            if (!pluginTags.has(tag)) {
-              return false;
-            }
-          }
-          return true;
-        }
-        for (const tag of selectedTags) {
-          if (pluginTags.has(tag)) {
-            return true;
-          }
-        }
-        return false;
-      });
-    });
-
-    const togglePluginTagFilter = (tag) => {
-      const normalized = String(tag || "").trim().toLowerCase();
-      if (!normalized) return;
-      const next = new Set(pluginTagFilters.value);
-      if (next.has(normalized)) {
-        next.delete(normalized);
-      } else {
-        next.add(normalized);
-      }
-      pluginTagFilters.value = [...next].sort((left, right) => left.localeCompare(right));
-    };
-
-    const clearPluginFilters = () => {
-      pluginNameFilter.value = "";
-      pluginTagFilters.value = [];
-    };
-
-    const togglePluginFilterBar = () => {
-      pluginFilterBarOpen.value = !pluginFilterBarOpen.value;
-      window.localStorage.setItem(PLUGIN_FILTER_BAR_OPEN_STORAGE_KEY, pluginFilterBarOpen.value ? "true" : "false");
-    };
-
-    const isPluginTagActive = (tag) => pluginTagFilters.value.includes(String(tag || "").trim().toLowerCase());
-
-    const setPluginTagMatchMode = (mode) => {
-      pluginTagMatchMode.value = normalizePluginTagMatchMode(mode);
-      window.localStorage.setItem(PLUGIN_TAG_MATCH_MODE_STORAGE_KEY, pluginTagMatchMode.value);
-    };
-
-    const isPluginRoutesOpen = (pluginName) => !!pluginRoutesOpen.value?.[pluginName];
-
-    const savePluginRoutesOpen = () => {
-      window.localStorage.setItem(PLUGIN_ROUTES_OPEN_STORAGE_KEY, JSON.stringify(pluginRoutesOpen.value));
-    };
-
-    const togglePluginRoutes = (pluginName) => {
-      if (!pluginName) return;
-      const next = { ...pluginRoutesOpen.value };
-      if (isPluginRoutesOpen(pluginName)) {
-        delete next[pluginName];
-      } else {
-        next[pluginName] = true;
-      }
-      pluginRoutesOpen.value = next;
-      savePluginRoutesOpen();
-    };
-
-    const nowTime = () => new Date(Date.now()).toISOString().replace("T", " ").replace("Z", " UTC");
-    let tokenRefreshPromise = null;
-    let proactiveRefreshTimerId = null;
-    let countdownTimerId = null;
-
-    const formatUtcDateTime = (value) => {
-      if (!value) return "unknown UTC";
-      const parsed = new Date(value);
-      if (Number.isNaN(parsed.getTime())) return `${String(value)} UTC`;
-      return parsed.toISOString().replace("T", " ").replace("Z", " UTC");
-    };
-
-    const formatAuditLine = (label, timestamp, username) => {
-      return `${label}: ${formatUtcDateTime(timestamp)}${username ? ` by ${username}` : ""}`;
-    };
-
-    const MAX_HEADER_TAGS = 3;
-    const visibleHeaderTags = (tags) => {
-      if (!Array.isArray(tags)) return [];
-      return tags.slice(0, MAX_HEADER_TAGS);
-    };
-    const hiddenHeaderTagCount = (tags) => {
-      if (!Array.isArray(tags)) return 0;
-      return Math.max(0, tags.length - MAX_HEADER_TAGS);
-    };
-
-    const formatCountdown = (targetTsSeconds) => {
-      if (!targetTsSeconds) return "not scheduled";
-      const remainingMs = Math.max(0, targetTsSeconds * 1000 - clockNow.value);
-      const totalSeconds = Math.floor(remainingMs / 1000);
-      const minutes = Math.floor(totalSeconds / 60);
-      const seconds = totalSeconds % 60;
-      return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-    };
-
-    const accessTokenCountdown = computed(() => formatCountdown(accessTokenExpiresAt.value));
-    const nextRefreshCountdown = computed(() => formatCountdown(nextRefreshAt.value));
-
-    const setDefaultActiveTab = () => {
-      activeTab.value = currentUser.value?.role === "admin" ? "admin" : "browse";
-    };
-
-    const normalizeProjects = (raw) => {
-      if (Array.isArray(raw)) {
-        return raw.map((item) => String(item || "").trim()).filter(Boolean);
-      }
-      return String(raw || "")
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean);
-    };
-
-    const clearProactiveRefresh = () => {
-      if (proactiveRefreshTimerId !== null) {
-        window.clearTimeout(proactiveRefreshTimerId);
-        proactiveRefreshTimerId = null;
-      }
-      nextRefreshAt.value = 0;
-      window.localStorage.removeItem(NEXT_REFRESH_AT_STORAGE_KEY);
-    };
-
-    const scheduleProactiveRefresh = () => {
-      clearProactiveRefresh();
-      if (!refreshToken.value || !accessTokenExpiresAt.value) {
-        return;
-      }
-
-      const leadTimeMs = 60_000 + Math.floor(Math.random() * 120_000);
-      const delayMs = Math.max(5_000, (accessTokenExpiresAt.value * 1000) - Date.now() - leadTimeMs);
-      nextRefreshAt.value = Math.floor((Date.now() + delayMs) / 1000);
-      window.localStorage.setItem(NEXT_REFRESH_AT_STORAGE_KEY, String(nextRefreshAt.value));
-      proactiveRefreshTimerId = window.setTimeout(async () => {
-        const refreshed = await refreshSession(false);
-        if (!refreshed) {
-          clearSession("Session expired. Please sign in again.");
-        }
-      }, delayMs);
-    };
-
-    const saveTokens = (accessToken, nextRefreshToken = refreshToken.value, nextAccessTokenExpiresAt = accessTokenExpiresAt.value) => {
-      authToken.value = accessToken || "";
-      refreshToken.value = nextRefreshToken || "";
-      accessTokenExpiresAt.value = Number(nextAccessTokenExpiresAt || 0);
-      if (authToken.value) {
-        window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken.value);
-      } else {
-        window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
-      }
-      if (refreshToken.value) {
-        window.localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, refreshToken.value);
-      } else {
-        window.localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
-      }
-      if (accessTokenExpiresAt.value) {
-        window.localStorage.setItem(ACCESS_TOKEN_EXPIRES_AT_STORAGE_KEY, String(accessTokenExpiresAt.value));
-      } else {
-        window.localStorage.removeItem(ACCESS_TOKEN_EXPIRES_AT_STORAGE_KEY);
-      }
-      scheduleProactiveRefresh();
-    };
-
-    const clearSession = (reason = "") => {
-      saveTokens("", "");
-      clearProactiveRefresh();
-      currentUser.value = null;
-      activeTab.value = "browse";
-      items.value = [];
-      browseTotalItems.value = 0;
-      expandedKey.value = null;
-      expandedVersions.value = [];
-      optimizerModalOpen.value = false;
-      activeOptimizationJobId.value = "";
-      if (optimizerPollTimerId !== null) {
-        window.clearTimeout(optimizerPollTimerId);
-        optimizerPollTimerId = null;
-      }
-      users.value = [];
-      projects.value = [];
-      plugins.value = [];
-      pluginControlValues.value = {};
-      pluginResponses.value = {};
-      pluginsStatus.value = "";
-      optimizeConfig.value = defaultOptimizeConfig();
-      globalConfigEntries.value = [];
-      globalConfigStatus.value = "";
-      if (reason) {
-        authError.value = reason;
-      }
-    };
-
-    const authHeaders = (headers = {}) => {
-      const merged = { ...headers };
-      if (authToken.value) {
-        merged.Authorization = `Bearer ${authToken.value}`;
-      }
-      return merged;
-    };
-
-    const consumeAuthPayload = (payload) => {
-      saveTokens(payload.access_token || "", payload.refresh_token || "", payload.access_token_expires_at || 0);
-      if (payload.user) {
-        currentUser.value = payload.user;
-      }
-    };
-
-    const refreshSession = async (showStatusMessage = true) => {
-      if (!refreshToken.value) {
-        return false;
-      }
-      if (tokenRefreshPromise) {
-        return tokenRefreshPromise;
-      }
-
-      tokenRefreshPromise = (async () => {
-        try {
-          const res = await fetch("/v1/auth/refresh", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ refresh_token: refreshToken.value }),
-          });
-          if (!res.ok) {
-            return false;
-          }
-          const payload = await res.json();
-          consumeAuthPayload(payload);
-          if (showStatusMessage) {
-            authStatus.value = "Session refreshed.";
-          }
-          authError.value = "";
-          return true;
-        } catch (err) {
-          return false;
-        } finally {
-          tokenRefreshPromise = null;
-        }
-      })();
-
-      return tokenRefreshPromise;
-    };
-
-    const apiFetch = async (url, options = {}, retryOn401 = true) => {
-      const requestOptions = {
-        ...options,
-        headers: authHeaders(options.headers || {}),
-      };
-      let response = await fetch(url, requestOptions);
-      if (response.status === 401 && retryOn401 && refreshToken.value && !String(url).startsWith("/v1/auth/refresh")) {
-        const refreshed = await refreshSession();
-        if (refreshed) {
-          response = await fetch(url, {
-            ...options,
-            headers: authHeaders(options.headers || {}),
-          });
-          if (response.status !== 401) {
-            return response;
-          }
-        }
-      }
-      if (response.status === 401) {
-        clearSession("Session expired. Please sign in again.");
-      }
-      return response;
-    };
-
-    const fetchAuthStatus = async () => {
-      try {
-        const res = await fetch("/v1/auth/status");
-        if (!res.ok) {
-          authBootstrapRequired.value = false;
-          authMode.value = "login";
-          return;
-        }
-        const payload = await res.json();
-        authBootstrapRequired.value = !!payload.bootstrap_required;
-        authMode.value = payload.bootstrap_required ? "bootstrap" : "login";
-      } catch (err) {
-        authBootstrapRequired.value = false;
-        authMode.value = "login";
-      }
-    };
-
-    const loadUsers = async () => {
-      if (!canViewAdmin.value) {
-        users.value = [];
-        return;
-      }
-      usersLoading.value = true;
-      usersStatus.value = "";
-      const res = await apiFetch("/v1/users");
-      if (!res.ok) {
-        usersLoading.value = false;
-        usersStatus.value = `Failed to load users (${res.status})`;
-        return;
-      }
-      users.value = await res.json();
-      usersLoading.value = false;
-    };
-
-    const loadProjects = async () => {
-      if (!canViewAdmin.value) {
-        projects.value = [];
-        return;
-      }
-      projectsLoading.value = true;
-      projectsStatus.value = "";
-      const res = await apiFetch("/v1/projects");
-      if (!res.ok) {
-        projectsLoading.value = false;
-        projectsStatus.value = `Failed to load projects (${res.status})`;
-        return;
-      }
-      projects.value = await res.json();
-      projectsLoading.value = false;
-    };
-
-    const loadRoles = async () => {
-      if (!canViewAdmin.value) {
-        roleOptions.value = [...defaultUserRoleOptions, "viewer"];
-        return;
-      }
-      const res = await apiFetch("/v1/roles");
-      if (!res.ok) {
-        roleOptions.value = [...defaultUserRoleOptions, "viewer"];
-        return;
-      }
-      const roles = await res.json();
-      roleOptions.value = Array.isArray(roles) && roles.length
-        ? roles.map((item) => item.name)
-        : [...defaultUserRoleOptions];
-    };
-
-    const loadGlobalConfig = async () => {
-      if (!isAdmin.value) {
-        globalConfigEntries.value = [];
-        globalConfigStatus.value = "";
-        return;
-      }
-      globalConfigLoading.value = true;
-      globalConfigStatus.value = "";
-      try {
-        const res = await apiFetch("/v1/admin/config/");
-        if (!res.ok) {
-          globalConfigStatus.value = `Failed to load global config (${res.status})`;
-          return;
-        }
-        const payload = await res.json();
-        const entries = Object.entries(payload || {})
-          .map(([key, value]) => ({
-            key,
-            value: String(value ?? ""),
-            draft: String(value ?? ""),
-            saving: false,
-          }))
-          .sort((a, b) => a.key.localeCompare(b.key));
-        globalConfigEntries.value = entries;
-      } catch (_err) {
-        globalConfigStatus.value = "Failed to load global config (network error)";
-      } finally {
-        globalConfigLoading.value = false;
-      }
-    };
-
-    const globalConfigBooleanKeys = new Set([
-      "PROMPTMAN_CACHE_ENABLED",
-      "PROMPTMAN_CACHE_PERSISTENCE_ENABLED",
-      "PROMPTMAN_PLUGINS_SIGNED_ONLY",
-    ]);
-
-    const globalConfigIntegerKeys = new Set([
-      "OPTIMIZER_TIMEOUT_SECONDS",
-      "PROMPTMAN_CACHE_MAX_ENTRIES",
-      "PROMPTMAN_CACHE_PERSISTENCE_LIMIT",
-    ]);
-
-    const globalConfigSelectKeys = new Set([
-      "OPTIMIZER_BACKEND",
-      "OPTIMIZER_PROVIDER",
-    ]);
-
-    const getGlobalConfigControlType = (entry) => {
-      const key = String(entry?.key || "");
-      if (globalConfigBooleanKeys.has(key)) return "boolean";
-      if (globalConfigIntegerKeys.has(key)) return "integer";
-      if (globalConfigSelectKeys.has(key)) return "select";
-      return "text";
-    };
-
-    const getGlobalConfigOptions = (entry) => {
-      const key = String(entry?.key || "");
-      if (key === "OPTIMIZER_BACKEND") {
-        return ["leo"];
-      }
-      if (key === "OPTIMIZER_PROVIDER") {
-        const providers = llmProviderOptions.value || [];
-        return providers.length ? providers : ["ollama", "openai", "anthropic"];
-      }
-      return [];
-    };
-
-    const setGlobalConfigBooleanDraft = (entry, checked) => {
-      entry.draft = checked ? "true" : "false";
-    };
-
-    const normalizeGlobalConfigDraftForSave = (entry) => {
-      const controlType = getGlobalConfigControlType(entry);
-      if (controlType === "boolean") {
-        const normalized = String(entry.draft || "").trim().toLowerCase();
-        entry.draft = ["true", "1", "yes", "on"].includes(normalized) ? "true" : "false";
-        return;
-      }
-      if (controlType === "integer") {
-        const raw = String(entry.draft ?? "").trim();
-        if (!/^-?\d+$/.test(raw)) {
-          throw new Error("Value must be an integer");
-        }
-        entry.draft = String(parseInt(raw, 10));
-      }
-    };
-
-    const resetGlobalConfigDraft = (entry) => {
-      entry.draft = entry.value;
-    };
-
-    const saveGlobalConfigEntry = async (entry) => {
-      if (!isAdmin.value) {
-        return;
-      }
-      entry.saving = true;
-      globalConfigStatus.value = "";
-      try {
-        normalizeGlobalConfigDraftForSave(entry);
-        const params = new URLSearchParams({ value: String(entry.draft ?? "") });
-        const res = await apiFetch(`/v1/admin/config/${encodeURIComponent(entry.key)}?${params.toString()}`, {
-          method: "PUT",
-        });
-        if (!res.ok) {
-          let detail = "";
-          try {
-            const body = await res.json();
-            detail = body?.detail || "";
-          } catch (_err) {
-            detail = "";
-          }
-          globalConfigStatus.value = `Failed to save ${entry.key} (${res.status})${detail ? `: ${detail}` : ""}`;
-          return;
-        }
-
-        entry.value = String(entry.draft ?? "");
-        globalConfigStatus.value = `Saved ${entry.key}`;
-
-        if (entry.key.startsWith("OPTIMIZER_") || entry.key === "OLLAMA_BASE_URL") {
-          await loadOptimizeConfig();
-        }
-        if (entry.key === "PROMPTMAN_PLUGINS_SIGNED_ONLY") {
-          await loadPlugins();
-        }
-      } catch (_err) {
-        const details = _err?.message || "network error";
-        globalConfigStatus.value = `Failed to save ${entry.key} (${details})`;
-      } finally {
-        entry.saving = false;
-      }
-    };
-
-    const pluginHasImageIcon = (icon) => typeof icon === "string" && /^(\/|https?:)/i.test(icon);
-
-    const pluginIconFallback = (plugin) => String(plugin?.name || "P").slice(0, 1).toUpperCase();
-
-    const getPluginEndpointConfig = (plugin, endpointName) => {
-      const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
-      const baseName = String(endpointName || "").replace(/_init$/, "");
-      return endpoints.find((item) => item.name === baseName) || null;
-    };
-
-    const getPluginInitValue = (plugin, control) => {
-      const initKey = control.init_endpoint_name || `${control.endpoint_name}_init`;
-      const initResult = plugin?.init_results?.[initKey];
-      if (initResult && Object.prototype.hasOwnProperty.call(initResult, "value")) {
-        return initResult.value;
-      }
-      return control.default_value ?? (control.control_type === "checkbox" ? false : "");
-    };
-
-    const ensurePluginControlBucket = (plugin) => {
-      if (!plugin || !plugin.name) return;
-      if (!pluginControlValues.value[plugin.name]) {
-        pluginControlValues.value[plugin.name] = {};
-      }
-      (plugin.ui_controls || []).forEach((control) => {
-        if (!(control.name in pluginControlValues.value[plugin.name])) {
-          pluginControlValues.value[plugin.name][control.name] = getPluginInitValue(plugin, control);
-        }
-      });
-    };
-
-    const loadPlugins = async () => {
-      if (!currentUser.value) {
-        plugins.value = [];
-        pluginControlValues.value = {};
-        pluginResponses.value = {};
-        pluginDiagnostics.value = {};
-        pluginDiagnosticsLoading.value = {};
-        pluginDiagnosticsOpen.value = {};
-        pluginRoutesOpen.value = {};
-        return;
-      }
-      pluginsLoading.value = true;
-      pluginsStatus.value = "";
-      const res = await apiFetch("/v1/plugins");
-      if (!res.ok) {
-        pluginsLoading.value = false;
-        pluginsStatus.value = `Failed to load plugins (${res.status})`;
-        return;
-      }
-      plugins.value = await res.json();
-      plugins.value.forEach((plugin) => ensurePluginControlBucket(plugin));
-      const names = new Set(plugins.value.map((plugin) => plugin.name));
-      pluginDiagnostics.value = Object.fromEntries(
-        Object.entries(pluginDiagnostics.value).filter(([name]) => names.has(name))
-      );
-      pluginDiagnosticsLoading.value = Object.fromEntries(
-        Object.entries(pluginDiagnosticsLoading.value).filter(([name]) => names.has(name))
-      );
-      pluginDiagnosticsOpen.value = Object.fromEntries(
-        Object.entries(pluginDiagnosticsOpen.value).filter(([name]) => names.has(name))
-      );
-      pluginRoutesOpen.value = Object.fromEntries(
-        Object.entries(pluginRoutesOpen.value).filter(([name, isOpen]) => names.has(name) && !!isOpen)
-      );
-      savePluginRoutesOpen();
-      if (isAdmin.value) {
-        await Promise.all(plugins.value.map((plugin) => loadPluginDiagnostics(plugin.name, false)));
-      }
-      if (pluginModalOpen.value && pluginModalPluginName.value) {
-        const modalPluginStillExists = plugins.value.some((plugin) => plugin.name === pluginModalPluginName.value);
-        if (!modalPluginStillExists) {
-          await closePluginModal(false);
-        }
-      }
-      pluginsLoading.value = false;
-    };
-
-    const getPluginDiagnostics = (pluginName) => pluginDiagnostics.value?.[pluginName] || null;
-
-    const isPluginDiagnosticsLoading = (pluginName) => !!pluginDiagnosticsLoading.value?.[pluginName];
-
-    const isPluginDiagnosticsOpen = (pluginName) => !!pluginDiagnosticsOpen.value?.[pluginName];
-
-    const loadPluginDiagnostics = async (pluginName, force = false) => {
-      if (!isAdmin.value || !pluginName) {
-        return;
-      }
-      if (!force && pluginDiagnostics.value?.[pluginName]) {
-        return;
-      }
-      if (pluginDiagnosticsLoading.value?.[pluginName]) {
-        return;
-      }
-      pluginDiagnosticsLoading.value[pluginName] = true;
-      const res = await apiFetch(`/v1/plugins/${encodeURIComponent(pluginName)}/_diagnostics`);
-      if (!res.ok) {
-        pluginDiagnostics.value[pluginName] = {
-          error: `Failed to load diagnostics (${res.status})`,
-        };
-        pluginDiagnosticsLoading.value[pluginName] = false;
-        return;
-      }
-      let payload = {};
-      try {
-        payload = await res.json();
-      } catch (_) {
-        payload = { error: "Diagnostics response is invalid" };
-      }
-      pluginDiagnostics.value[pluginName] = payload;
-      pluginDiagnosticsLoading.value[pluginName] = false;
-    };
-
-    const togglePluginDiagnostics = async (pluginName) => {
-      const nextState = !isPluginDiagnosticsOpen(pluginName);
-      pluginDiagnosticsOpen.value[pluginName] = nextState;
-      if (nextState) {
-        await loadPluginDiagnostics(pluginName, false);
-      }
-    };
-
-    const getPluginModalLaunchers = (plugin) => {
-      const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
-      return endpoints.filter((endpoint) => !!endpoint.launches_modal);
-    };
-
-    const pluginModalTabs = computed(() => {
-      const tabs = pluginModalSession.value?.modal?.tabs;
-      return Array.isArray(tabs) ? tabs : [];
-    });
-
-    const pluginModalActiveTabSpec = computed(() => {
-      const tabs = pluginModalTabs.value;
-      if (!tabs.length) return null;
-      return tabs.find((tab) => tab.id === pluginModalActiveTab.value) || tabs[0] || null;
-    });
-
-    const pluginModalBodyMarkdown = computed(() => {
-      if (pluginModalActiveTabSpec.value?.body_markdown) {
-        return pluginModalActiveTabSpec.value.body_markdown;
-      }
-      return pluginModalSession.value?.modal?.body_markdown || "";
-    });
-
-    const pluginModalCharts = computed(() => {
-      const tabCharts = pluginModalActiveTabSpec.value?.charts;
-      return Array.isArray(tabCharts) ? tabCharts : [];
-    });
-
-    const pluginModalControls = computed(() => {
-      const baseControls = Array.isArray(pluginModalSession.value?.modal?.controls)
-        ? pluginModalSession.value.modal.controls
-        : [];
-      const tabControls = Array.isArray(pluginModalActiveTabSpec.value?.controls)
-        ? pluginModalActiveTabSpec.value.controls
-        : [];
-      const merged = [...baseControls, ...tabControls];
-      const seen = new Set();
-      return merged.filter((control) => {
-        const key = String(control?.name || "");
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    });
-
-    const selectPluginModalTab = (tabId) => {
-      pluginModalActiveTab.value = String(tabId || "");
-    };
-
-    const ensurePluginModalActiveTab = () => {
-      const tabs = pluginModalTabs.value;
-      if (!tabs.length) {
-        pluginModalActiveTab.value = "";
-        return;
-      }
-      const preferred = String(pluginModalSession.value?.modal?.active_tab || "");
-      const exists = tabs.some((tab) => tab.id === pluginModalActiveTab.value);
-      if (exists) return;
-      if (preferred && tabs.some((tab) => tab.id === preferred)) {
-        pluginModalActiveTab.value = preferred;
-        return;
-      }
-      pluginModalActiveTab.value = String(tabs[0].id || "");
-    };
-
-    const getPluginModalChartBounds = (chart) => {
-      const points = Array.isArray(chart?.points) ? chart.points : [];
-      if (!points.length) return { min: 0, max: 1 };
-      const values = points.map((point) => Number(point?.value || 0));
-      let minValue = Number.isFinite(Number(chart?.value_min)) ? Number(chart.value_min) : Math.min(...values);
-      let maxValue = Number.isFinite(Number(chart?.value_max)) ? Number(chart.value_max) : Math.max(...values);
-      if (maxValue <= minValue) {
-        maxValue = minValue + 1;
-      }
-      return { min: minValue, max: maxValue };
-    };
-
-    const getPluginModalChartPointStyle = (chart, point) => {
-      const value = Number(point?.value || 0);
-      const bounds = getPluginModalChartBounds(chart);
-      const ratio = Math.max(0, Math.min(1, (value - bounds.min) / (bounds.max - bounds.min)));
-      return { width: `${(ratio * 100).toFixed(1)}%` };
-    };
-
-    const getPluginModalControlValue = (controlName) => {
-      return pluginModalSession.value?.control_values?.[controlName];
-    };
-
-    const setPluginModalControlValue = (controlName, value) => {
-      if (!pluginModalSession.value) return;
-      if (!pluginModalSession.value.control_values) {
-        pluginModalSession.value.control_values = {};
-      }
-      pluginModalSession.value.control_values[controlName] = value;
-    };
-
-    const openPluginModal = async (plugin, endpointName) => {
-      if (!plugin?.name || !endpointName) return;
-      pluginModalBackdropArmed.value = false;
-      pluginModalLoading.value = true;
-      pluginModalError.value = "";
-      pluginModalStatus.value = "Opening modal...";
-      try {
-        const res = await apiFetch(`/v1/plugins/${encodeURIComponent(plugin.name)}/modals`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ endpoint_name: endpointName, payload: {}, controls: {} }),
-        });
-        if (!res.ok) {
-          let detail = "";
-          try {
-            const body = await res.json();
-            detail = body?.detail || "";
-          } catch (_err) {
-            detail = "";
-          }
-          pluginModalError.value = `Failed to open modal (${res.status})${detail ? `: ${detail}` : ""}`;
-          return;
-        }
-        const session = await res.json();
-        pluginModalSession.value = session;
-        ensurePluginModalActiveTab();
-        pluginModalPluginName.value = plugin.name;
-        pluginModalEndpointName.value = endpointName;
-        pluginModalOpen.value = true;
-        pluginModalStatus.value = session?.modal?.status || "Modal opened";
-      } catch (_err) {
-        pluginModalError.value = "Failed to open modal (network error)";
-      } finally {
-        pluginModalLoading.value = false;
-      }
-    };
-
-    const refreshPluginModal = async () => {
-      if (!pluginModalSession.value?.session_id || !pluginModalPluginName.value) return;
-      const res = await apiFetch(`/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}`);
-      if (!res.ok) {
-        pluginModalError.value = `Failed to refresh modal (${res.status})`;
-        return;
-      }
-      pluginModalSession.value = await res.json();
-      ensurePluginModalActiveTab();
-    };
-
-    const invokePluginModalControl = async (control, overrideValue = undefined) => {
-      if (!pluginModalSession.value?.session_id || !pluginModalPluginName.value) return;
-      const value = overrideValue !== undefined ? overrideValue : getPluginModalControlValue(control.name);
-      const currentControls = { ...(pluginModalSession.value.control_values || {}) };
-      currentControls[control.name] = value;
-      setPluginModalControlValue(control.name, value);
-
-      const res = await apiFetch(
-        `/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}/controls/${encodeURIComponent(control.name)}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ control_name: control.name, value, controls: currentControls }),
-        }
-      );
-      if (!res.ok) {
-        let detail = "";
-        try {
-          const body = await res.json();
-          detail = body?.detail || "";
-        } catch (_err) {
-          detail = "";
-        }
-        pluginModalError.value = `Modal control failed (${res.status})${detail ? `: ${detail}` : ""}`;
-        return;
-      }
-      pluginModalSession.value = await res.json();
-      ensurePluginModalActiveTab();
-      pluginModalStatus.value = pluginModalSession.value?.modal?.status || pluginModalStatus.value;
-    };
-
-    const stopPluginModal = async () => {
-      if (!pluginModalSession.value?.session_id || !pluginModalPluginName.value) return;
-      const res = await apiFetch(
-        `/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}/stop`,
-        { method: "POST" }
-      );
-      if (!res.ok) {
-        pluginModalError.value = `Failed to stop modal (${res.status})`;
-        return;
-      }
-      pluginModalSession.value = await res.json();
-      ensurePluginModalActiveTab();
-      pluginModalStatus.value = pluginModalSession.value?.modal?.status || "Modal stopped";
-    };
-
-    const closePluginModal = async (removeRemote = true) => {
-      pluginModalBackdropArmed.value = false;
-      if (removeRemote && pluginModalSession.value?.session_id && pluginModalPluginName.value) {
-        const res = await apiFetch(
-          `/v1/plugins/${encodeURIComponent(pluginModalPluginName.value)}/modals/${encodeURIComponent(pluginModalSession.value.session_id)}`,
-          { method: "DELETE" }
-        );
-        if (!res.ok && res.status !== 404) {
-          pluginModalError.value = `Failed to close modal (${res.status})`;
-          return;
-        }
-      }
-      pluginModalOpen.value = false;
-      pluginModalLoading.value = false;
-      pluginModalError.value = "";
-      pluginModalStatus.value = "";
-      pluginModalSession.value = null;
-      pluginModalPluginName.value = "";
-      pluginModalEndpointName.value = "";
-      pluginModalActiveTab.value = "";
-    };
-
-    const handlePluginModalBackdropPointerDown = () => {
-      pluginModalBackdropArmed.value = true;
-    };
-
-    const handlePluginModalBackdropClick = () => {
-      if (!pluginModalBackdropArmed.value) {
-        return;
-      }
-      pluginModalBackdropArmed.value = false;
-      void closePluginModal(false);
-    };
-
-    const getPluginDiagnosticsSummary = (pluginName) => {
-      const payload = getPluginDiagnostics(pluginName);
-      if (!payload || payload.error) {
-        return { blockedCount: 0, failureCount: 0 };
-      }
-      const endpointEntries = Array.isArray(payload.endpoint_diagnostics) ? payload.endpoint_diagnostics : [];
-      const hookEntries = Array.isArray(payload.hook_diagnostics) ? payload.hook_diagnostics : [];
-      const blockedCount = endpointEntries.filter((entry) => !!entry.blocked).length + hookEntries.filter((entry) => !!entry.blocked).length;
-      const failureCount = endpointEntries.reduce((acc, entry) => acc + Number(entry.consecutive_failures || 0), 0)
-        + hookEntries.reduce((acc, entry) => acc + Number(entry.consecutive_failures || 0), 0);
-      return { blockedCount, failureCount };
-    };
-
-    const getPluginBlockedCount = (pluginName) => getPluginDiagnosticsSummary(pluginName).blockedCount;
-
-    const getPluginFailureCount = (pluginName) => getPluginDiagnosticsSummary(pluginName).failureCount;
-
-    const getPluginControlValue = (pluginName, controlName) => {
-      return pluginControlValues.value?.[pluginName]?.[controlName];
-    };
-
-    const setPluginControlValue = (pluginName, controlName, value) => {
-      if (!pluginControlValues.value[pluginName]) {
-        pluginControlValues.value[pluginName] = {};
-      }
-      pluginControlValues.value[pluginName][controlName] = value;
-    };
-
-    const canUsePluginControl = (plugin, control) => {
-      const endpoint = getPluginEndpointConfig(plugin, control.endpoint_name);
-      if (!endpoint || !Array.isArray(endpoint.roles) || !endpoint.roles.length) {
-        return true;
-      }
-      return endpoint.roles.includes(currentUser.value?.role);
-    };
-
-    const setPluginResponse = (pluginName, type, message) => {
-      pluginResponses.value[pluginName] = { type, message };
-    };
-
-    const invokePluginControl = async (plugin, control, overrideValue = undefined) => {
-      const endpoint = getPluginEndpointConfig(plugin, control.endpoint_name);
-      if (!endpoint) {
-        setPluginResponse(plugin.name, "err", `Unknown endpoint ${control.endpoint_name}`);
-        return;
-      }
-      const currentBucket = { ...(pluginControlValues.value?.[plugin.name] || {}) };
-      const value = overrideValue !== undefined ? overrideValue : currentBucket[control.name];
-      currentBucket[control.name] = value;
-      setPluginControlValue(plugin.name, control.name, value);
-
-      const requestOptions = {
-        method: endpoint.method || "POST",
-      };
-      if (!["GET", "DELETE"].includes(String(endpoint.method || "POST").toUpperCase())) {
-        requestOptions.headers = { "Content-Type": "application/json" };
-        requestOptions.body = JSON.stringify({
-          value,
-          control_name: control.name,
-          controls: currentBucket,
-        });
-      }
-
-      const res = await apiFetch(`/v1/plugins/${encodeURIComponent(plugin.name)}/${encodeURIComponent(control.endpoint_name)}`, requestOptions);
-      if (!res.ok) {
-        let details = "";
-        try {
-          const payload = await res.json();
-          details = payload?.detail || "";
-        } catch (_) {
-          details = "";
-        }
-        setPluginResponse(plugin.name, "err", `Plugin call failed (${res.status})${details ? `: ${details}` : ""}`);
-        return;
-      }
-      let payload = {};
-      try {
-        payload = await res.json();
-      } catch (_) {
-        payload = {};
-      }
-      if (Object.prototype.hasOwnProperty.call(payload, "value")) {
-        setPluginControlValue(plugin.name, control.name, payload.value);
-      }
-      setPluginResponse(plugin.name, "ok", payload.message || "Plugin action completed");
-    };
-
-    const managePlugin = async (pluginName, action) => {
-      const routes = {
-        load: { url: `/v1/plugins/${encodeURIComponent(pluginName)}/_load`, method: "POST" },
-        reload: { url: `/v1/plugins/${encodeURIComponent(pluginName)}/_reload`, method: "POST" },
-        unload: { url: `/v1/plugins/${encodeURIComponent(pluginName)}`, method: "DELETE" },
-        health: { url: `/v1/plugins/${encodeURIComponent(pluginName)}/health`, method: "POST" },
-      };
-      const target = routes[action];
-      if (!target) return;
-      pluginsStatus.value = "";
-      const res = await apiFetch(target.url, { method: target.method });
-      if (!res.ok) {
-        pluginsStatus.value = `Failed to ${action} plugin ${pluginName} (${res.status})`;
-        return;
-      }
-      const payload = await res.json();
-      pluginsStatus.value = payload.message || `Plugin ${action} completed`;
-      await loadPlugins();
-      if (isPluginDiagnosticsOpen(pluginName)) {
-        await loadPluginDiagnostics(pluginName, true);
-      }
-      if (pluginModalOpen.value && pluginModalPluginName.value === pluginName && ["unload", "reload"].includes(action)) {
-        await closePluginModal(false);
-      }
-    };
-
-    const rescanPlugins = async () => {
-      pluginsStatus.value = "";
-      const res = await apiFetch("/v1/plugins/_rescan", { method: "POST" });
-      if (!res.ok) {
-        pluginsStatus.value = `Failed to rescan plugins (${res.status})`;
-        return;
-      }
-      const payload = await res.json();
-      pluginsStatus.value = payload.message || "Plugin rescan completed";
-      await loadPlugins();
-      if (isAdmin.value) {
-        const openNames = Object.entries(pluginDiagnosticsOpen.value)
-          .filter(([, isOpen]) => !!isOpen)
-          .map(([name]) => name);
-        await Promise.all(openNames.map((name) => loadPluginDiagnostics(name, true)));
-      }
-    };
-
-    const initializeAuthenticatedApp = async () => {
-      setDefaultActiveTab();
-      await fetchPrompts();
-      await loadLlmProviders();
-      await loadOptimizeConfig();
-      await loadPlugins();
-      await loadRoles();
-      await loadProjects();
-      await loadUsers();
-      await loadGlobalConfig();
-    };
-
-    const loadCurrentUser = async () => {
-      if (!authToken.value) {
-        return false;
-      }
-      const res = await apiFetch("/v1/auth/me");
-      if (!res.ok) {
-        clearSession("");
-        return false;
-      }
-      currentUser.value = await res.json();
-      return true;
-    };
-
-    const submitAuth = async () => {
-      authBusy.value = true;
-      authError.value = "";
-      authStatus.value = "";
-      const endpoint = authMode.value === "bootstrap" ? "/v1/auth/bootstrap-admin" : "/v1/auth/login";
-      try {
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: authForm.value.username.trim(),
-            password: authForm.value.password,
-          }),
-        });
-        if (!res.ok) {
-          if (res.status === 409 && authMode.value === "bootstrap") {
-            authBootstrapRequired.value = false;
-            authMode.value = "login";
-            authError.value = "Bootstrap is no longer available. Sign in with an existing account.";
-            return;
-          }
-          const detail = await res.text();
-          authError.value = detail || `Authentication failed (${res.status})`;
-          return;
-        }
-        const payload = await res.json();
-        consumeAuthPayload(payload);
-        authForm.value.password = "";
-        authStatus.value = authMode.value === "bootstrap" ? "Admin account created." : "Signed in.";
-        await initializeAuthenticatedApp();
-      } catch (err) {
-        authError.value = "Authentication request failed.";
-      } finally {
-        authBusy.value = false;
-      }
-    };
-
-    const logout = () => {
-      clearSession("");
-      authStatus.value = "Signed out.";
-      fetchAuthStatus();
-    };
-
-    const beginEditUser = (user) => {
-      if (!canWrite.value) return;
-      editingUserId.value = user.id;
-      editUserForm.value = {
-        username: user.username || "",
-        password: "",
-        role: user.role || "developer",
-        projects: [...(user.projects || [])],
-        is_active: !!user.is_active,
-      };
-      usersStatus.value = "";
-    };
-
-    const resolveFormState = (formRef) => formRef?.value ?? formRef ?? {};
-
-    const toggleProjectSelection = (formRef, projectName) => {
-      if (!canWrite.value) return;
-      const formState = resolveFormState(formRef);
-      const current = new Set(normalizeProjects(formState.projects));
-      if (current.has(projectName)) {
-        current.delete(projectName);
-      } else {
-        current.add(projectName);
-      }
-      formState.projects = [...current].sort((left, right) => left.localeCompare(right));
-    };
-
-    const isProjectSelected = (formRef, projectName) => {
-      const formState = resolveFormState(formRef);
-      return normalizeProjects(formState.projects).includes(projectName);
-    };
-
-    const cancelUserEdit = () => {
-      editingUserId.value = null;
-      editUserForm.value = emptyUserForm();
-    };
-
-    const createProjectRecord = async () => {
-      if (!canWrite.value) return;
-      projectsStatus.value = "";
-      const res = await apiFetch("/v1/projects", {
+  if (!refreshTokenInFlight) {
+    refreshTokenInFlight = (async () => {
+      const response = await fetch("/v1/auth/refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newProjectForm.value.name.trim() }),
+        body: JSON.stringify({ refresh_token: state.refreshToken }),
       });
-      if (!res.ok) {
-        projectsStatus.value = `Failed to create project (${res.status})`;
-        return;
-      }
-      newProjectForm.value = emptyProjectForm();
-      projectsStatus.value = "Project created";
-      await loadProjects();
-    };
 
-    const beginEditProject = (project) => {
-      if (!canWrite.value) return;
-      editingProjectId.value = project.id;
-      editProjectForm.value = { name: project.name || "" };
-      projectsStatus.value = "";
-    };
-
-    const cancelProjectEdit = () => {
-      editingProjectId.value = null;
-      editProjectForm.value = emptyProjectForm();
-    };
-
-    const saveProjectEdit = async (projectId) => {
-      if (!canWrite.value) return;
-      projectsStatus.value = "";
-      const res = await apiFetch(`/v1/projects/${projectId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: editProjectForm.value.name.trim() }),
-      });
-      if (!res.ok) {
-        projectsStatus.value = `Failed to update project (${res.status})`;
-        return;
-      }
-      projectsStatus.value = "Project updated";
-      cancelProjectEdit();
-      await loadProjects();
-      await loadUsers();
-      await fetchPrompts();
-    };
-
-    const deleteProjectRecord = async (project) => {
-      if (!canWrite.value) return;
-      projectsStatus.value = "";
-      const message = `CAUTION: You are about to delete project "${project.name}" and ALL related prompts with ALL their versions.\n\nThis action cannot be undone.\n\nAre you sure?`;
-      if (!window.confirm(message)) return;
-      const res = await apiFetch(`/v1/projects/${project.id}`, { method: "DELETE" });
-      if (!res.ok) {
-        projectsStatus.value = `Failed to delete project (${res.status})`;
-        return;
-      }
-      projectsStatus.value = "Project deleted";
-      await loadProjects();
-      await loadUsers();
-      await fetchPrompts(1);
-    };
-
-    const createUserAccount = async () => {
-      if (!canWrite.value) return;
-      usersStatus.value = "";
-      const payload = {
-        username: newUserForm.value.username.trim(),
-        password: newUserForm.value.password,
-        role: newUserForm.value.role,
-        projects: normalizeProjects(newUserForm.value.projects),
-        is_active: !!newUserForm.value.is_active,
-      };
-      const res = await apiFetch("/v1/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        usersStatus.value = `Failed to create user (${res.status})`;
-        return;
-      }
-      newUserForm.value = emptyUserForm();
-      usersStatus.value = "User created";
-      await loadUsers();
-    };
-
-    const saveUserEdit = async (userId) => {
-      if (!canWrite.value) return;
-      usersStatus.value = "";
-      const payload = {
-        username: editUserForm.value.username.trim(),
-        role: editUserForm.value.role,
-        projects: normalizeProjects(editUserForm.value.projects),
-        is_active: !!editUserForm.value.is_active,
-      };
-      if (editUserForm.value.password) {
-        payload.password = editUserForm.value.password;
-      }
-      const res = await apiFetch(`/v1/users/${userId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        usersStatus.value = `Failed to update user (${res.status})`;
-        return;
-      }
-      usersStatus.value = "User updated";
-      cancelUserEdit();
-      await loadUsers();
-      if (currentUser.value?.id === userId) {
-        await loadCurrentUser();
-      }
-    };
-
-    const deleteUserAccount = async (user) => {
-      if (!canWrite.value) return;
-      usersStatus.value = "";
-      if (!window.confirm(`Delete user ${user.username}?`)) return;
-      const res = await apiFetch(`/v1/users/${user.id}`, { method: "DELETE" });
-      if (!res.ok) {
-        usersStatus.value = `Failed to delete user (${res.status})`;
-        return;
-      }
-      usersStatus.value = "User deleted";
-      await loadUsers();
-    };
-
-    const pushOptimizerLog = (message, level = "info", ts = null) => {
-      optimizerLogs.value.push({
-        ts: ts ? formatUtcDateTime(ts) : nowTime(),
-        level,
-        message,
-      });
-    };
-
-    const clearOptimizationPoll = () => {
-      if (optimizerPollTimerId !== null) {
-        window.clearTimeout(optimizerPollTimerId);
-        optimizerPollTimerId = null;
-      }
-    };
-
-    const applyOptimizationResponse = (data, ts = null) => {
-      optimizerEngine.value = data.engine || "optimizer";
-      optimizerNotes.value = data.notes || [];
-      optimizerElapsedSeconds.value = Number.isFinite(Number(data.elapsed_seconds)) ? Number(data.elapsed_seconds) : null;
-      optimizerStatus.value = optimizerEngine.value.includes("fallback")
-        ? "Optimization finished with fallback"
-        : "Optimization completed";
-
-      pushOptimizerLog(`Completed. Engine: ${optimizerEngine.value}.`, optimizerEngine.value.includes("fallback") ? "warn" : "success", ts);
-      if (optimizerElapsedSeconds.value !== null) {
-        pushOptimizerLog(`Backend elapsed: ${optimizerElapsedSeconds.value.toFixed(2)}s.`, "info", ts);
-      }
-      if (Array.isArray(optimizerNotes.value) && optimizerNotes.value.length) {
-        optimizerNotes.value.forEach((note) => {
-          const level = String(note || "").toLowerCase().includes("failed") ? "warn" : "info";
-          pushOptimizerLog(String(note), level, ts);
-        });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `${response.status} ${response.statusText}`);
       }
 
-      optimizedMarkdown.value = data.optimized_markdown || "";
-      optimizedDraft.value = {
-        role: data.optimized?.role || "",
-        task: data.optimized?.task || "",
-        context: data.optimized?.context || "",
-        constraints: data.optimized?.constraints || "",
-        output_format: data.optimized?.output_format || "",
-        examples: data.optimized?.examples || "",
-      };
-    };
-
-    const finalizeOptimizationJob = (job) => {
-      clearOptimizationPoll();
-      activeOptimizationJobId.value = "";
-      optimizerLoading.value = false;
-      const finalTs = job.cancelled_at || job.completed_at || null;
-      const actualStartedTs = job.started_at || job.created_at || null;
-      const runningEntry = optimizerLogs.value.find((entry) => entry.message === "Optimization is running on backend ...");
-      if (runningEntry && actualStartedTs) {
-        runningEntry.ts = formatUtcDateTime(actualStartedTs);
-      }
-
-      if (job.status === "completed" && job.result) {
-        applyOptimizationResponse(job.result, finalTs);
-        return;
-      }
-
-      if (job.status === "cancelled") {
-        optimizerStatus.value = "Optimization cancelled";
-        optimizerError.value = "";
-        pushOptimizerLog(job.error || "Optimization cancelled.", "warn", finalTs);
-        return;
-      }
-
-      optimizerStatus.value = "Optimization failed";
-      optimizerError.value = job.error || "Optimization failed before completion.";
-      pushOptimizerLog(job.error || "Optimization failed before completion.", "error", finalTs);
-    };
-
-    const pollOptimizationJob = async (jobId) => {
-      if (!jobId || activeOptimizationJobId.value !== jobId) {
-        return;
-      }
-
-      let res;
-      try {
-        res = await apiFetch(`/v1/optimize/jobs/${encodeURIComponent(jobId)}`);
-      } catch (err) {
-        clearOptimizationPoll();
-        activeOptimizationJobId.value = "";
-        optimizerLoading.value = false;
-        optimizerStatus.value = "Optimization failed";
-        optimizerError.value = "Unable to query optimization status.";
-        pushOptimizerLog("Unable to query optimization status.", "error");
-        return;
-      }
-
-      if (!res.ok) {
-        let details = "";
-        try {
-          details = await res.text();
-        } catch (err) {
-          details = "";
-        }
-        clearOptimizationPoll();
-        activeOptimizationJobId.value = "";
-        optimizerLoading.value = false;
-        optimizerStatus.value = "Optimization failed";
-        optimizerError.value = `Unable to query optimization status (${res.status}).`;
-        pushOptimizerLog(
-          `Optimization status query failed with HTTP ${res.status}${details ? `: ${details.slice(0, 220)}` : ""}`,
-          "error"
-        );
-        return;
-      }
-
-      const job = await res.json();
-      if (job.status === "running") {
-        optimizerPollTimerId = window.setTimeout(() => {
-          pollOptimizationJob(jobId);
-        }, 1000);
-        return;
-      }
-
-      finalizeOptimizationJob(job);
-    };
-
-    const cancelActiveOptimization = async (closeAfterCancel = false) => {
-      const jobId = activeOptimizationJobId.value;
-      clearOptimizationPoll();
-
-      if (!jobId) {
-        optimizerLoading.value = false;
-        if (closeAfterCancel) {
-          optimizerModalOpen.value = false;
-        }
-        return true;
-      }
-
-      let res;
-      try {
-        res = await apiFetch(`/v1/optimize/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
-      } catch (err) {
-        optimizerError.value = "Unable to cancel optimization.";
-        pushOptimizerLog("Unable to cancel optimization.", "error");
-        return false;
-      }
-
-      if (!res.ok) {
-        let details = "";
-        try {
-          details = await res.text();
-        } catch (err) {
-          details = "";
-        }
-        optimizerError.value = `Unable to cancel optimization (${res.status}).`;
-        pushOptimizerLog(
-          `Optimization cancel failed with HTTP ${res.status}${details ? `: ${details.slice(0, 220)}` : ""}`,
-          "error"
-        );
-        return false;
-      }
-
-      const job = await res.json();
-      finalizeOptimizationJob(job);
-      if (closeAfterCancel) {
-        optimizerModalOpen.value = false;
-      }
-      return true;
-    };
-
-    const closeOptimizerModal = async () => {
-      if (optimizerLoading.value && activeOptimizationJobId.value) {
-        const cancelled = await cancelActiveOptimization(true);
-        if (!cancelled) {
-          return;
-        }
-        return;
-      }
-      optimizerModalOpen.value = false;
-    };
-
-    const normalizePageNumber = (page) => {
-      const parsed = Number(page);
-      return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 1;
-    };
-
-    const fetchPrompts = async (page = browsePage.value) => {
-      if (!currentUser.value) {
-        items.value = [];
-        browseTotalItems.value = 0;
-        return;
-      }
-      browsePage.value = normalizePageNumber(page);
-      const p = new URLSearchParams();
-      if (filterProject.value.trim()) p.set("project", filterProject.value.trim());
-      if (filterTag.value.trim())     p.set("tag",     filterTag.value.trim());
-      p.set("sort_by", browseSortBy.value);
-      p.set("sort_order", browseSortOrder.value);
-      p.set("limit", String(browsePageSize.value));
-      p.set("offset", String((browsePage.value - 1) * browsePageSize.value));
-      const q   = p.toString();
-      const res = await apiFetch("/v1/prompts" + (q ? "?" + q : ""));
-      if (!res.ok) {
-        console.error("fetchPrompts failed:", res.status, res.statusText);
-        items.value = [];
-        browseTotalItems.value = 0;
-        return;
-      }
-      items.value = await res.json();
-      browseTotalItems.value = Number(res.headers.get("X-Total-Count") || items.value.length || 0);
-    };
-
-    const totalBrowsePages = computed(() => {
-      const total = Math.ceil(browseTotalItems.value / browsePageSize.value);
-      return Math.max(1, total);
+      const payload = await response.json();
+      state.accessToken = payload.access_token || "";
+      state.refreshToken = payload.refresh_token || state.refreshToken;
+      state.currentUser = payload.user || state.currentUser;
+      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, state.accessToken);
+      localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, state.refreshToken);
+      renderAuth();
+      return payload;
+    })().finally(() => {
+      refreshTokenInFlight = null;
     });
+  }
 
-    const paginatedItems = computed(() => items.value);
+  return refreshTokenInFlight;
+}
 
-    const setBrowsePage = async (page) => {
-      const nextPage = Math.min(normalizePageNumber(page), totalBrowsePages.value);
-      await fetchPrompts(nextPage);
-    };
+async function api(path, options = {}) {
+  const requestOptions = { ...options };
+  const skipAutoRefresh = Boolean(requestOptions.skipAutoRefresh);
+  delete requestOptions.skipAutoRefresh;
 
-    const browseSummaryLabel = computed(() => {
-      return `Total ${browseTotalItems.value || 0}`;
+  const execute = async () => {
+    const headers = { "Content-Type": "application/json", ...(requestOptions.headers || {}) };
+    if (state.accessToken) {
+      headers.Authorization = `Bearer ${state.accessToken}`;
+    }
+    const response = await fetch(path, { ...requestOptions, headers });
+    return response;
+  };
+
+  let response = await execute();
+
+  const isRefreshCall = path === "/v1/auth/refresh";
+  const hasRefresh = Boolean(state.refreshToken);
+  if (response.status === 401 && !skipAutoRefresh && !isRefreshCall && hasRefresh) {
+    try {
+      await refreshAccessToken();
+      response = await execute();
+    } catch (_refreshError) {
+      logout();
+      throw new Error("Session expired. Please sign in again.");
+    }
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `${response.status} ${response.statusText}`);
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function sanitizeHtml(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${html}</div>`, "text/html");
+  const root = doc.body.firstElementChild;
+  if (!root) return "";
+
+  root.querySelectorAll("script,style,iframe,object,embed,link").forEach((node) => node.remove());
+  root.querySelectorAll("*").forEach((node) => {
+    for (const attr of [...node.attributes]) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value || "";
+      if (name.startsWith("on")) {
+        node.removeAttribute(attr.name);
+      }
+      if ((name === "href" || name === "src") && value.trim().toLowerCase().startsWith("javascript:")) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  });
+  return root.innerHTML;
+}
+
+function renderMarkdown(targetEl, rawText) {
+  const content = String(rawText || "");
+  if (!content.trim()) {
+    targetEl.innerHTML = "";
+    return;
+  }
+
+  if (typeof window.marked?.parse === "function") {
+    const html = window.marked.parse(content);
+    targetEl.innerHTML = sanitizeHtml(html);
+    return;
+  }
+
+  targetEl.textContent = content;
+}
+
+function setActiveTab(targetId) {
+  document.querySelectorAll(".tab").forEach((tabButton) => {
+    const isActive = tabButton.dataset.target === targetId;
+    tabButton.classList.toggle("is-active", isActive);
+    tabButton.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.hidden = panel.id !== targetId;
+  });
+}
+
+function toggleStatusMenu(forceOpen) {
+  const menu = $("statusMenu");
+  const isOpen = typeof forceOpen === "boolean" ? forceOpen : menu.hidden;
+  menu.hidden = !isOpen;
+  $("statusToggleBtn").setAttribute("aria-expanded", isOpen ? "true" : "false");
+}
+
+function setStatusMenuTab(targetId) {
+  document.querySelectorAll(".status-tab").forEach((tabButton) => {
+    const isActive = tabButton.dataset.statusTarget === targetId;
+    tabButton.classList.toggle("is-active", isActive);
+    tabButton.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+
+  document.querySelectorAll(".status-panel").forEach((panel) => {
+    panel.hidden = panel.id !== targetId;
+  });
+}
+
+function setSettingsSubTab(targetId) {
+  document.querySelectorAll(".settings-tab").forEach((tabButton) => {
+    const isActive = tabButton.dataset.settingsTarget === targetId;
+    tabButton.classList.toggle("is-active", isActive);
+    tabButton.setAttribute("aria-selected", isActive ? "true" : "false");
+  });
+
+  document.querySelectorAll(".settings-panel").forEach((panel) => {
+    panel.hidden = panel.id !== targetId;
+  });
+}
+
+function updateSettingsTabVisibility() {
+  const settingsTab = $("tabSettings");
+  const isAdmin = state.currentUser?.role === "admin";
+  settingsTab.hidden = !isAdmin;
+  if (!isAdmin && document.querySelector(".tab.is-active")?.dataset.target === "panelSettings") {
+    setActiveTab("panelCreateThread");
+  }
+}
+
+function renderAuth() {
+  const authenticated = Boolean(state.currentUser);
+  $("userStatusCompact").textContent = authenticated ? state.currentUser.username : "Guest";
+  $("userStatusText").textContent = authenticated
+    ? `${state.currentUser.username} (${state.currentUser.role})`
+    : "Not authenticated";
+  $("statusDot").classList.toggle("online", authenticated);
+  updateSettingsTabVisibility();
+}
+
+async function loadAppVersion() {
+  try {
+    const payload = await api("/v1/version", { headers: {} });
+    const version = payload?.version;
+    $("productVersion").textContent = typeof version === "string" && version ? `v${version}` : "v0.0.0";
+  } catch (_error) {
+    $("productVersion").textContent = "vunknown";
+  }
+}
+
+function renderThreads(items) {
+  const list = $("threadsList");
+  list.innerHTML = "";
+  for (const thread of items) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <button class="thread-item-btn ${state.selectedThreadId === thread.id ? "is-selected" : ""}" data-id="${thread.id}">
+        <strong>${escapeHtml(thread.title)}</strong>
+        <span class="muted">${escapeHtml(thread.project)} · ${escapeHtml(thread.source)}</span>
+      </button>
+    `;
+    list.appendChild(li);
+  }
+
+  list.querySelectorAll("button[data-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      state.selectedThreadId = Number(btn.dataset.id);
+      await loadThreadDetails();
     });
+  });
+}
 
-    const loadVersions = async (p) => {
-      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name + "/versions");
-      expandedVersions.value = res.ok ? await res.json() : [];
-    };
+function renderMessages(items) {
+  const list = $("messagesList");
+  list.innerHTML = "";
+  for (const message of items) {
+    const li = document.createElement("li");
+    li.className = "message-item";
+    li.innerHTML = `
+      <div class="message-head">
+        <strong>${message.seq_no}. ${escapeHtml(message.role)}</strong>
+        <span class="muted">${escapeHtml(message.timestamp)}</span>
+      </div>
+      <div class="message-content"></div>
+    `;
+    const contentNode = li.querySelector(".message-content");
+    renderMarkdown(contentNode, message.content);
+    list.appendChild(li);
+  }
+}
 
-    const togglePrompt = async (p) => {
-      const k = key(p);
-      if (expandedKey.value === k) {
-        expandedKey.value = null; expandedVersions.value = [];
-        openVersionKey.value = null; editTagsMode.value = false;
-        newVersionEditorOpen.value = false;
-        newVersionRole.value = ""; newVersionTask.value = ""; newVersionContext.value = "";
-        newVersionConstraints.value = ""; newVersionOutputFormat.value = ""; newVersionExamples.value = "";
-        saveStatus.value = "";
-        deleteStatus.value = "";
-        return;
-      }
-      expandedKey.value       = k;
-      editTagsMode.value      = false;
-      newVersionEditorOpen.value = false;
-      editTagsStr.value       = tagsToStr(p.tags);
-      newVersionRole.value    = p.role || "";
-      newVersionTask.value    = p.task || "";
-      newVersionContext.value = p.context || "";
-      newVersionConstraints.value = p.constraints || "";
-      newVersionOutputFormat.value = p.output_format || "";
-      newVersionExamples.value = p.examples || "";
-      saveStatus.value        = "";
-      deleteStatus.value      = "";
-      openVersionKey.value    = null;
-      await loadVersions(p);
-    };
+function getPluginByName(pluginName) {
+  return state.plugins.find((item) => item.name === pluginName) || null;
+}
 
-    const deletePrompt = async (p) => {
-      if (!canWrite.value) return;
-      deleteStatus.value = "";
-      const confirmed = window.confirm(`Delete prompt ${p.project} / ${p.name}? This cannot be undone.`);
-      if (!confirmed) return;
+function getPluginEndpoint(plugin, endpointName) {
+  const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
+  return endpoints.find((item) => item.name === endpointName) || null;
+}
 
-      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name, {
-        method: "DELETE",
+function getPluginControl(plugin, controlName) {
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  return controls.find((item) => item.name === controlName) || null;
+}
+
+function ensurePluginControlState(plugin) {
+  const key = String(plugin?.name || "");
+  if (!key) return {};
+  if (!state.pluginControlValues[key]) {
+    state.pluginControlValues[key] = {};
+  }
+  const values = state.pluginControlValues[key];
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  for (const control of controls) {
+    if (Object.prototype.hasOwnProperty.call(values, control.name)) continue;
+    if (control.default_value !== undefined && control.default_value !== null) {
+      values[control.name] = control.default_value;
+    } else if (control.control_type === "checkbox") {
+      values[control.name] = false;
+    } else {
+      values[control.name] = "";
+    }
+  }
+  return values;
+}
+
+function renderPluginControl(control, values, pluginName, scope = "runtime") {
+  const controlName = String(control?.name || "");
+  const label = escapeHtml(String(control?.label || controlName));
+  const endpointName = escapeHtml(String(control?.endpoint_name || ""));
+  const value = values?.[controlName];
+  const baseAttrs = `data-plugin-name="${escapeHtml(pluginName)}" data-control-name="${escapeHtml(controlName)}" data-endpoint-name="${endpointName}" data-control-type="${escapeHtml(control.control_type || "")}" data-plugin-scope="${escapeHtml(scope)}"`;
+
+  if (control.control_type === "button") {
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <button type="button" class="secondary" data-plugin-control-button="1" ${baseAttrs}>${label}</button>
+      </article>
+    `;
+  }
+
+  if (control.control_type === "checkbox") {
+    const checked = value ? "checked" : "";
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <label class="switch switch-sm" aria-label="${label}">
+          <input type="checkbox" ${checked} data-plugin-control-input="1" ${baseAttrs} />
+          <span class="slider"></span>
+        </label>
+      </article>
+    `;
+  }
+
+  if (control.control_type === "dropdown") {
+    const options = Array.isArray(control?.options) ? control.options : [];
+    const optionsHtml = options
+      .map((item) => {
+        const optionValue = String(item?.value || "");
+        const selected = String(value ?? "") === optionValue ? "selected" : "";
+        return `<option value="${escapeHtml(optionValue)}" ${selected}>${escapeHtml(String(item?.label || optionValue))}</option>`;
+      })
+      .join("");
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <select data-plugin-control-input="1" ${baseAttrs}>${optionsHtml}</select>
+      </article>
+    `;
+  }
+
+  if (control.control_type === "textarea") {
+    return `
+      <article class="plugin-control">
+        <p class="plugin-control-label">${label}</p>
+        <textarea rows="3" data-plugin-control-input="1" ${baseAttrs}>${escapeHtml(String(value ?? ""))}</textarea>
+      </article>
+    `;
+  }
+
+  return `
+    <article class="plugin-control">
+      <p class="plugin-control-label">${label}</p>
+      <input type="text" value="${escapeHtml(String(value ?? ""))}" data-plugin-control-input="1" ${baseAttrs} />
+    </article>
+  `;
+}
+
+function renderPluginControlsCell(plugin) {
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  if (!controls.length) {
+    return '<span class="muted">(no controls)</span>';
+  }
+  const values = ensurePluginControlState(plugin);
+  return `<div class="plugin-controls-grid">${controls.map((control) => renderPluginControl(control, values, plugin.name)).join("")}</div>`;
+}
+
+async function invokePluginEndpoint(pluginName, endpointName, payload = {}) {
+  const plugin = getPluginByName(pluginName);
+  const endpoint = getPluginEndpoint(plugin, endpointName);
+  const method = String(endpoint?.method || "POST").toUpperCase();
+  const path = `/v1/plugins/${encodeURIComponent(pluginName)}/${encodeURIComponent(endpointName)}`;
+  if (method === "GET") {
+    return await api(path, { method: "GET" });
+  }
+  return await api(path, { method, body: JSON.stringify(payload || {}) });
+}
+
+async function hydratePluginControls(plugin) {
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  if (!controls.length) return;
+
+  const values = ensurePluginControlState(plugin);
+  for (const control of controls) {
+    const initEndpoint = control.init_endpoint_name || `${control.endpoint_name}_init`;
+    try {
+      const result = await invokePluginEndpoint(plugin.name, initEndpoint, {
+        source: "plugins-ui-init",
+        control_name: control.name,
+        controls: { ...values },
       });
-
-      if (!res.ok) {
-        deleteStatus.value = "Delete failed (" + res.status + ")";
-        return;
+      if (result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "value")) {
+        values[control.name] = result.value;
       }
+    } catch (_error) {
+      // Keep default values when init endpoint is missing or fails.
+    }
+  }
+}
 
-      deleteStatus.value = "Prompt deleted";
-      expandedKey.value = null;
-      expandedVersions.value = [];
-      openVersionKey.value = null;
-      editTagsMode.value = false;
-      await fetchPrompts();
-    };
+async function openPluginModal(pluginName, endpointName) {
+  const controls = { ...(state.pluginControlValues[pluginName] || {}) };
+  const session = await api(`/v1/plugins/${encodeURIComponent(pluginName)}/modals`, {
+    method: "POST",
+    body: JSON.stringify({ endpoint_name: endpointName, payload: { controls }, controls }),
+  });
+  state.activePluginModal = session;
+  renderPluginModalSession(session);
+  const dialog = $("pluginModalDialog");
+  if (dialog && typeof dialog.showModal === "function") {
+    dialog.showModal();
+  }
+}
 
-    const saveNewVersion = async (p) => {
-      if (!canWrite.value) return;
-      saveStatus.value = "";
-      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          role: newVersionRole.value || null,
-          task: newVersionTask.value,
-          context: newVersionContext.value || null,
-          constraints: newVersionConstraints.value || null,
-          output_format: newVersionOutputFormat.value || null,
-          examples: newVersionExamples.value || null,
-        }),
-      });
-      if (!res.ok) { saveStatus.value = "Save failed (" + res.status + ")"; return; }
-      saveStatus.value = "Version saved";
-      await fetchPrompts();
-      await loadVersions(p);
-      const updated = items.value.find((i) => key(i) === expandedKey.value);
-      if (updated) {
-        newVersionRole.value    = updated.role || "";
-        newVersionTask.value    = updated.task || "";
-        newVersionContext.value = updated.context || "";
-        newVersionConstraints.value = updated.constraints || "";
-        newVersionOutputFormat.value = updated.output_format || "";
-        newVersionExamples.value = updated.examples || "";
-      }
-    };
+function renderPluginModalSession(session) {
+  if (!session) return;
+  $("pluginModalTitle").textContent = String(session.modal?.title || "Plugin modal");
+  $("pluginModalDescription").textContent = String(session.modal?.description || "");
+  renderMarkdown($("pluginModalMarkdown"), String(session.modal?.body_markdown || ""));
+  $("pluginModalStatus").textContent = String(session.modal?.status || session.state || "");
+  $("pluginModalLogs").textContent = Array.isArray(session.logs) ? session.logs.join("\n") : "";
 
-    const saveTags = async (p) => {
-      if (!canWrite.value) return;
-      saveStatus.value = "";
-      const res = await apiFetch("/v1/prompts/" + p.project + "/" + p.name + "/tags", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tags: parseTags(editTagsStr.value) }),
-      });
-      if (!res.ok) { saveStatus.value = "Tag save failed (" + res.status + ")"; return; }
-      saveStatus.value = "Tags updated";
-      editTagsMode.value = false;
-      await fetchPrompts();
-    };
+  const controls = Array.isArray(session.modal?.controls) ? session.modal.controls : [];
+  const values = session.control_values || {};
+  $("pluginModalControls").innerHTML = controls.map((control) => renderPluginControl(control, values, session.plugin_name, "modal")).join("");
 
-    const createPrompt = async () => {
-      if (!canWrite.value) return;
-      createStatus.value = "";
-      const name = form.value.name.trim();
-      const project = form.value.project.trim();
-      if (!name || !project) {
-        createStatus.value = "Name and Project are required";
-        return;
-      }
+  const stopBtn = $("pluginModalStopBtn");
+  if (stopBtn) {
+    stopBtn.textContent = String(session.modal?.stop_label || "Stop");
+    stopBtn.disabled = Boolean(session.stop_requested);
+  }
+  const closeBtn = $("pluginModalCloseBtn");
+  if (closeBtn) {
+    closeBtn.textContent = String(session.modal?.close_label || "Close");
+  }
+}
 
-      const payload = {
-        name,
-        project,
-        tags:    parseTags(form.value.tags),
-        role:    form.value.role || null,
-        task:    form.value.task,
-        context: form.value.context || null,
-        constraints: form.value.constraints || null,
-        output_format: form.value.output_format || null,
-        examples: form.value.examples || null,
-      };
-      const res = await apiFetch("/v1/prompts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) { createStatus.value = "Create failed (" + res.status + ")"; return; }
-      form.value = { name: "", project: "", tags: "", role: "", task: "", context: "", constraints: "", output_format: "", examples: "" };
-      createStatus.value = "Prompt created";
-      await fetchPrompts();
-      activeTab.value = "browse";
-    };
-
-    const promptPayload = (fields) => ({
-      role: fields.role || null,
-      task: fields.task || "",
-      context: fields.context || null,
-      constraints: fields.constraints || null,
-      output_format: fields.output_format || null,
-      examples: fields.examples || null,
+async function closePluginModalSession() {
+  const session = state.activePluginModal;
+  const dialog = $("pluginModalDialog");
+  if (!session) {
+    if (dialog?.open) dialog.close();
+    return;
+  }
+  try {
+    await api(`/v1/plugins/${encodeURIComponent(session.plugin_name)}/modals/${encodeURIComponent(session.session_id)}`, {
+      method: "DELETE",
     });
+  } catch (_error) {
+    // Close UI even if backend session is already closed.
+  }
+  state.activePluginModal = null;
+  if (dialog?.open) dialog.close();
+}
 
-    const getDefaultProviderModels = (provider) => {
-      const key = String(provider || "").toLowerCase();
-      if (getProviderConfig(key).requiresApiToken) {
-        return [];
-      }
-      return [...(defaultLlmModelsByProvider.value[key] || [])];
-    };
+async function stopPluginModalSession() {
+  const session = state.activePluginModal;
+  if (!session) return;
+  const next = await api(`/v1/plugins/${encodeURIComponent(session.plugin_name)}/modals/${encodeURIComponent(session.session_id)}/stop`, {
+    method: "POST",
+  });
+  state.activePluginModal = next;
+  renderPluginModalSession(next);
+}
 
-    const getProviderConfig = (provider) => {
-      const key = String(provider || "").toLowerCase();
-      return llmProviderConfigs.value[key] || llmProviderConfigs.value.ollama || initialLlmProviderConfigs.ollama;
-    };
+async function updatePluginModalControlValue(controlName, value) {
+  const session = state.activePluginModal;
+  if (!session) return;
+  const controls = { ...(session.control_values || {}) };
+  controls[controlName] = value;
+  const next = await api(
+    `/v1/plugins/${encodeURIComponent(session.plugin_name)}/modals/${encodeURIComponent(session.session_id)}/controls/${encodeURIComponent(controlName)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ control_name: controlName, value, controls }),
+    },
+  );
+  state.activePluginModal = next;
+  renderPluginModalSession(next);
+}
 
-    const getProviderLabel = (provider) => {
-      return getProviderConfig(provider).label || provider;
-    };
+function detectPluginTypes(plugin) {
+  const types = [];
+  const controls = Array.isArray(plugin?.ui_controls) ? plugin.ui_controls : [];
+  const hooks = Array.isArray(plugin?.hooks) ? plugin.hooks : [];
+  const endpoints = Array.isArray(plugin?.endpoints) ? plugin.endpoints : [];
+  const hasModalEndpoint = endpoints.some((item) => Boolean(item?.launches_modal));
 
-    const getProviderDefaultBaseUrl = (provider) => {
-      return getProviderConfig(provider).baseUrl || "http://127.0.0.1:11434";
-    };
+  if (controls.length) types.push("ui");
+  if (hasModalEndpoint) types.push("modal");
+  if (hooks.length) types.push("hook");
+  if (endpoints.length && !types.includes("modal")) types.push("headless");
+  if (!types.length) types.push("unknown");
 
-    const getProviderDefaultModel = (provider) => {
-      return getDefaultProviderModels(provider)[0] || "";
-    };
+  return types;
+}
 
-    const updateProviderBaseUrl = (provider = optimizeConfig.value.llm_provider) => {
-      optimizeConfig.value.llm_base_url = getProviderDefaultBaseUrl(provider);
-      optimizeConfig.value.llm_model = getProviderDefaultModel(provider);
-    };
+function renderPluginTypeChips(types) {
+  return types
+    .map((type) => `<span class="plugin-type-chip">${escapeHtml(String(type).toUpperCase())}</span>`)
+    .join("");
+}
 
-    const modelRequiresToken = (provider = optimizeConfig.value.llm_provider) => {
-      return !!getProviderConfig(provider).requiresApiToken;
-    };
+function isCurrentUserAdmin() {
+  return state.currentUser?.role === "admin";
+}
 
-    const loadLlmProviders = async () => {
-      try {
-        const res = await apiFetch("/v1/llm/providers");
-        if (!res.ok) {
-          return;
-        }
-        const providers = await res.json();
-        if (!Array.isArray(providers) || !providers.length) {
-          return;
-        }
+function renderPluginAdminActions(pluginName) {
+  if (!isCurrentUserAdmin()) {
+    return '<span class="muted">(admin only)</span>';
+  }
+  const safePluginName = escapeHtml(String(pluginName || ""));
+  return `
+    <div class="plugin-actions">
+      <button type="button" class="ghost" data-plugin-admin-action="reload" data-plugin-name="${safePluginName}">Reload</button>
+      <button type="button" class="secondary" data-plugin-admin-action="health" data-plugin-name="${safePluginName}">Health</button>
+    </div>
+  `;
+}
 
-        const nextConfigs = {};
-        providers.forEach((provider) => {
-          const key = String(provider?.key || "").toLowerCase().trim();
-          if (!key) return;
-          const models = Array.isArray(provider?.models)
-            ? provider.models.filter((m) => typeof m === "string" && m.trim())
-            : [];
-          nextConfigs[key] = {
-            label: String(provider?.label || key),
-            baseUrl: String(provider?.base_url || ""),
-            requiresApiToken: Boolean(provider?.requires_api_token),
-            models,
-          };
-        });
+function renderPluginsTable(items) {
+  const tbody = $("pluginsTable").querySelector("tbody");
+  tbody.innerHTML = "";
 
-        if (Object.keys(nextConfigs).length) {
-          llmProviderConfigs.value = nextConfigs;
-        }
-      } catch (_) {
-      }
-    };
+  if (!Array.isArray(items) || !items.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="muted">No plugins found.</td></tr>';
+    return;
+  }
 
-    const isEmbeddingLikeModel = (modelName) => {
-      const normalized = String(modelName || "").toLowerCase();
-      return normalized.includes("embed") || normalized.includes("embedding") || normalized.includes("snowflake-arctic");
-    };
+  for (const plugin of items) {
+    const row = document.createElement("tr");
+    const types = detectPluginTypes(plugin);
+    const description = String(plugin.description || "").trim() || "(no description)";
+    const signature = String(plugin.signature_status || "unsigned");
+    const endpointsCount = Array.isArray(plugin.endpoints) ? plugin.endpoints.length : 0;
 
-    const loadAvailableLlmModels = async (provider = optimizeConfig.value.llm_provider, preserveCurrentModel = true) => {
-      llmModelsLoading.value = true;
-      llmModelsLoadError.value = "";
+    row.innerHTML = `
+      <td><strong>${escapeHtml(String(plugin.name || ""))}</strong></td>
+      <td>${renderPluginTypeChips(types)}</td>
+      <td>${escapeHtml(String(plugin.version || "unknown"))}</td>
+      <td>${escapeHtml(description)}</td>
+      <td class="plugin-controls-cell">${renderPluginControlsCell(plugin)}</td>
+      <td>${escapeHtml(String(plugin.state || "unknown"))}</td>
+      <td>${escapeHtml(signature)}</td>
+      <td>${endpointsCount}</td>
+      <td><span class="muted">${escapeHtml(String(plugin.source_path || ""))}</span></td>
+      <td>${renderPluginAdminActions(plugin.name)}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
 
-      const selectedProvider = String(provider || "ollama").toLowerCase();
-      const fallbackModels = getDefaultProviderModels(selectedProvider);
-      const requiresToken = modelRequiresToken(selectedProvider);
-      const token = String(optimizeConfig.value.llm_api_token || "").trim();
+async function refreshPlugins() {
+  if (!state.accessToken) {
+    state.plugins = [];
+    renderPluginsTable([]);
+    $("pluginsStatus").textContent = "Sign in to view plugin catalog.";
+    return;
+  }
 
-      if (requiresToken && !token) {
-        availableLlmModels.value = [];
-        llmModelsLoadError.value = `${getProviderLabel(selectedProvider)} requires API token. Unable to request available models without token.`;
-        llmModelsLoading.value = false;
-        return;
-      }
+  try {
+    const items = await api("/v1/plugins");
+    state.plugins = Array.isArray(items) ? items : [];
+    for (const plugin of state.plugins) {
+      ensurePluginControlState(plugin);
+      await hydratePluginControls(plugin);
+    }
+    renderPluginsTable(state.plugins);
+    $("pluginsStatus").textContent = `Loaded ${state.plugins.length} plugin(s).`;
+  } catch (error) {
+    $("pluginsStatus").textContent = `Failed to load plugins: ${error.message}`;
+  }
+}
 
-      try {
-        const params = new URLSearchParams();
-        if ((optimizeConfig.value.llm_base_url || "").trim()) {
-          params.set("base_url", optimizeConfig.value.llm_base_url.trim());
-        }
-        if (token) {
-          params.set("api_token", token);
-        }
-        params.set("timeout_seconds", "10");
+async function handlePluginControlAction(pluginName, controlName, nextValue, scope) {
+  const plugin = getPluginByName(pluginName);
+  if (!plugin) return;
+  const control = getPluginControl(plugin, controlName);
+  if (!control) return;
 
-        const res = await apiFetch(`/v1/llm/providers/${encodeURIComponent(selectedProvider)}/models?${params.toString()}`);
-        if (!res.ok) {
-          llmModelsLoadError.value = `Failed to load provider models (HTTP ${res.status}).`;
-          availableLlmModels.value = requiresToken ? [] : fallbackModels;
-        } else {
-          const discovered = await res.json();
-          const clean = Array.isArray(discovered)
-            ? discovered.filter((m) => typeof m === "string" && m.trim())
-            : [];
-          if (clean.length > 0) {
-            availableLlmModels.value = clean;
-            console.log(`[Models] Loaded ${clean.length} models from ${selectedProvider}:`, clean);
-          } else {
-            llmModelsLoadError.value = `No models discovered for ${selectedProvider}.`;
-            availableLlmModels.value = requiresToken ? [] : fallbackModels;
-          }
-        }
-      } catch (err) {
-        llmModelsLoadError.value = `Unable to connect to ${selectedProvider}: ${err.message}`;
-        console.error(`[Models] Error fetching ${selectedProvider} models:`, err);
-        availableLlmModels.value = requiresToken ? [] : fallbackModels;
-      } finally {
-        const currentModel = (optimizeConfig.value.llm_model || "").trim();
-        const canPreserveCurrentModel =
-          preserveCurrentModel &&
-          currentModel &&
-          !availableLlmModels.value.includes(currentModel) &&
-          !(selectedProvider === "ollama" && isEmbeddingLikeModel(currentModel));
-        if (canPreserveCurrentModel) {
-          availableLlmModels.value = [currentModel, ...availableLlmModels.value];
-        }
-        if (!currentModel || !availableLlmModels.value.includes(currentModel)) {
-          if (availableLlmModels.value.length) {
-            optimizeConfig.value.llm_model = availableLlmModels.value[0];
-          }
-        }
-        llmModelsLoading.value = false;
-      }
-    };
+  if (scope === "modal") {
+    await updatePluginModalControlValue(controlName, nextValue);
+    return;
+  }
 
-    const loadOptimizeConfig = async () => {
-      if (!currentUser.value) {
-        optimizeConfig.value = defaultOptimizeConfig();
-        return;
-      }
-      const res = await apiFetch("/v1/llm/config");
-      if (!res.ok) {
-        optimizeConfigStatus.value = "Failed to load optimize config (" + res.status + ")";
-        return;
-      }
-      const cfg = await res.json();
-      optimizeConfig.value = {
-        ...defaultOptimizeConfig(),
-        ...cfg,
-        model_id: cfg.runtime_model_id || "",
-        rounds: cfg.runtime_rounds || cfg.effective_rounds || 2,
-        gp_profile: cfg.runtime_gp_profile || cfg.effective_gp_profile || "fast",
-        llm_provider: cfg.runtime_llm_provider || cfg.effective_llm_provider || "ollama",
-        llm_model: cfg.runtime_llm_model || cfg.effective_llm_model || "qwen2.5:0.5b",
-        llm_base_url: cfg.runtime_llm_base_url || cfg.effective_llm_base_url || getProviderDefaultBaseUrl(cfg.runtime_llm_provider || cfg.effective_llm_provider),
-        llm_timeout_seconds: cfg.runtime_llm_timeout_seconds || cfg.effective_llm_timeout_seconds || 300,
-        llm_api_token: "",  // Never populate token from response for security
-        effective_has_llm_api_token: cfg.effective_has_llm_api_token || false,
-      };
-      await loadAvailableLlmModels(optimizeConfig.value.llm_provider);
-    };
+  const values = ensurePluginControlState(plugin);
+  values[controlName] = nextValue;
 
-    const persistOptimizeConfig = async (showSuccessMessage = true) => {
-      if (!canWrite.value) {
-        return false;
-      }
-      optimizeConfigStatus.value = "";
-      const payload = {
-        llm_provider: optimizeConfig.value.llm_provider || "ollama",
-        llm_model: optimizeConfig.value.llm_model || "qwen2.5:0.5b",
-        llm_base_url: optimizeConfig.value.llm_base_url || "http://127.0.0.1:11434",
-        llm_timeout_seconds: Number(optimizeConfig.value.llm_timeout_seconds) || 300,
-        llm_api_token: optimizeConfig.value.llm_api_token || null,
-      };
-      const res = await apiFetch("/v1/llm/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) {
-        optimizeConfigStatus.value = "Failed to save optimize config (" + res.status + ")";
-        return false;
-      }
-      if (showSuccessMessage) {
-        optimizeConfigStatus.value = "Optimize config saved";
-      }
-      await loadOptimizeConfig();
-      return true;
-    };
+  const endpointConfig = getPluginEndpoint(plugin, control.endpoint_name);
+  const isModalEntrypoint = Boolean(endpointConfig?.launches_modal);
 
-    const saveOptimizeConfig = async () => {
-      await persistOptimizeConfig(true);
-    };
+  if (isModalEntrypoint) {
+    await openPluginModal(pluginName, control.endpoint_name);
+    return;
+  }
 
-    const optimizePrompt = async (endpoint, fields, source, target = null) => {
-      if (!canWrite.value) {
-        optimizerError.value = "Viewer role is read-only.";
-        return;
-      }
-      clearOptimizationPoll();
-      activeOptimizationJobId.value = "";
-      optimizerLoading.value = true;
-      optimizerError.value = "";
-      optimizerStatus.value = "Optimization started";
-      optimizerEngine.value = "";
-      optimizerNotes.value = [];
-      optimizerElapsedSeconds.value = null;
-      optimizerLogs.value = [];
-      optimizedMarkdown.value = "";
-      optimizeEndpoint.value = endpoint;
-      optimizeInputSource.value = source;
-      optimizeTargetPrompt.value = target;
-      optimizerMode.value = "optimizer";
-      optimizerModalOpen.value = true;
+  const result = await invokePluginEndpoint(pluginName, control.endpoint_name, {
+    value: nextValue,
+    control_name: controlName,
+    controls: { ...values },
+  });
 
-      pushOptimizerLog(`Started optimization from ${source}.`);
-      pushOptimizerLog("Saving active optimization config before request ...");
+  const message = typeof result?.message === "string" ? result.message : `${pluginName}.${control.endpoint_name} executed`;
+  $("pluginsStatus").textContent = message;
+}
 
-      const saved = await persistOptimizeConfig(false);
-      if (!saved) {
-        optimizerLoading.value = false;
-        optimizerStatus.value = "Optimization failed";
-        optimizerError.value = "Unable to save optimization config before optimization.";
-        pushOptimizerLog("Failed to save optimization config before optimization.", "error");
-        return;
-      }
+async function runPluginAdminAction(pluginName, action) {
+  if (!isCurrentUserAdmin()) {
+    $("pluginsStatus").textContent = "Admin role is required for plugin admin actions.";
+    return;
+  }
+  const normalizedAction = String(action || "").toLowerCase();
+  if (normalizedAction !== "reload" && normalizedAction !== "health") {
+    return;
+  }
 
-      pushOptimizerLog("Optimization config saved and applied.", "success");
-      pushOptimizerLog(
-        `Using provider=${optimizeConfig.value.effective_llm_provider || optimizeConfig.value.llm_provider}, model=${optimizeConfig.value.effective_llm_model || optimizeConfig.value.llm_model}, timeout=${optimizeConfig.value.effective_llm_timeout_seconds || optimizeConfig.value.llm_timeout_seconds}s.`
-      );
-      pushOptimizerLog(`Creating optimization job via /v1/optimize/jobs for target ${endpoint} ...`);
+  const path =
+    normalizedAction === "reload"
+      ? `/v1/plugins/${encodeURIComponent(pluginName)}/_reload`
+      : `/v1/plugins/${encodeURIComponent(pluginName)}/health`;
 
-      let res;
-      const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 20000);
-      try {
-        res = await apiFetch("/v1/optimize/jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(promptPayload(fields)),
-          signal: controller.signal,
-        });
-      } catch (err) {
-        window.clearTimeout(timeoutId);
-        optimizerLoading.value = false;
-        optimizerStatus.value = "Optimization failed";
-        if (err && err.name === "AbortError") {
-          optimizerError.value = "Optimization job creation timed out.";
-          pushOptimizerLog("Optimization job creation timed out.", "error");
-        } else {
-          optimizerError.value = "Optimization request failed before response.";
-          pushOptimizerLog("Request failed: network/server error.", "error");
-        }
-        return;
-      }
-      window.clearTimeout(timeoutId);
+  const result = await api(path, { method: "POST", body: JSON.stringify({}) });
+  const message = typeof result?.message === "string" ? result.message : `${normalizedAction} completed for ${pluginName}`;
+  $("pluginsStatus").textContent = message;
+  await refreshPlugins();
+}
 
-      if (!res.ok) {
-        optimizerLoading.value = false;
-        optimizerStatus.value = "Optimization failed";
-        let details = "";
-        try {
-          details = await res.text();
-        } catch (err) {
-          details = "";
-        }
-        optimizerError.value = "Optimization failed (" + res.status + ")";
-        pushOptimizerLog(
-          `Optimization failed with HTTP ${res.status}${details ? `: ${details.slice(0, 220)}` : ""}`,
-          "error"
-        );
-        return;
-      }
+function renderPromptChains(items) {
+  const list = $("promptChainsList");
+  list.innerHTML = "";
+  for (const chain of items) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <button class="thread-item-btn ${state.selectedPromptChainId === chain.id ? "is-selected" : ""}" data-id="${chain.id}">
+        <strong>${escapeHtml(chain.name)}</strong>
+        <span class="muted">${escapeHtml(chain.project)} · ${escapeHtml(chain.updated_at)}</span>
+      </button>
+    `;
+    list.appendChild(li);
+  }
 
-      pushOptimizerLog(`Job creation response received (HTTP ${res.status}). Parsing payload ...`);
-
-      let job;
-      try {
-        job = await res.json();
-      } catch (err) {
-        optimizerLoading.value = false;
-        optimizerStatus.value = "Optimization failed";
-        optimizerError.value = "Optimization job response is not valid JSON.";
-        pushOptimizerLog("Response parse failed: invalid optimization job payload.", "error");
-        return;
-      }
-
-      activeOptimizationJobId.value = String(job.job_id || "");
-      if (!activeOptimizationJobId.value) {
-        optimizerLoading.value = false;
-        optimizerStatus.value = "Optimization failed";
-        optimizerError.value = "Optimization job id is missing in backend response.";
-        pushOptimizerLog("Optimization job id is missing in backend response.", "error");
-        return;
-      }
-
-      pushOptimizerLog(`Optimization job created: ${activeOptimizationJobId.value}.`, "success", job.created_at || null);
-      pushOptimizerLog("Optimization is running on backend ...", "info", job.started_at || job.created_at || null);
-      optimizerStatus.value = "Optimization is running";
-      optimizerPollTimerId = window.setTimeout(() => {
-        pollOptimizationJob(activeOptimizationJobId.value);
-      }, 600);
-    };
-
-    const reoptimizePrompt = async () => {
-      optimizerError.value = "";
-      pushOptimizerLog("Reoptimize clicked. Saving config before restart ...");
-      const saved = await persistOptimizeConfig(false);
-      if (!saved) {
-        optimizerStatus.value = "Reoptimize failed";
-        optimizerError.value = "Reoptimize failed: unable to save optimization config.";
-        pushOptimizerLog("Failed to save optimization config before reoptimize.", "error");
-        return;
-      }
-
-      pushOptimizerLog("Config saved. Restarting optimization ...");
-
-      await optimizePrompt(
-        optimizeEndpoint.value,
-        optimizedDraft.value,
-        optimizeInputSource.value,
-        optimizeTargetPrompt.value
-      );
-    };
-
-    const optimizeFromCreate = async () => {
-      createOptimizeMenuOpen.value = false;
-      await optimizePrompt("/v1/optimize", form.value, "create", null);
-    };
-
-    const optimizeFromBrowse = async (p) => {
-      browseOptimizeMenuKey.value = null;
-      await optimizePrompt(
-        "/v1/optimize",
-        {
-          role: p.role || "",
-          task: p.task || "",
-          context: p.context || "",
-          constraints: p.constraints || "",
-          output_format: p.output_format || "",
-          examples: p.examples || "",
-        },
-        "browse",
-        { project: p.project, name: p.name }
-      );
-    };
-
-    const applyOptimizedPrompt = async () => {
-      if (!canWrite.value) {
-        optimizerError.value = "Viewer role is read-only.";
-        return;
-      }
-      if (optimizeInputSource.value === "create") {
-        form.value.role = optimizedDraft.value.role || "";
-        form.value.task = optimizedDraft.value.task || "";
-        form.value.context = optimizedDraft.value.context || "";
-        form.value.constraints = optimizedDraft.value.constraints || "";
-        form.value.output_format = optimizedDraft.value.output_format || "";
-        form.value.examples = optimizedDraft.value.examples || "";
-        optimizerModalOpen.value = false;
-        return;
-      }
-
-      const target = optimizeTargetPrompt.value;
-      if (!target) {
-        optimizerError.value = "No prompt selected for update.";
-        return;
-      }
-
-      const res = await apiFetch("/v1/prompts/" + target.project + "/" + target.name, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(promptPayload(optimizedDraft.value)),
-      });
-
-      if (!res.ok) {
-        optimizerError.value = "Update failed (" + res.status + ")";
-        return;
-      }
-
-      await fetchPrompts();
-      const updated = items.value.find((i) => key(i) === expandedKey.value);
-      if (updated) {
-        await loadVersions(updated);
-      }
-      optimizerModalOpen.value = false;
-      saveStatus.value = "Version saved";
-    };
-
-    const changeOwnPassword = async () => {
-      changePasswordStatus.value = "";
-      const form = changePasswordForm.value;
-      if (!form.current_password || !form.new_password) {
-        changePasswordStatus.value = "error:All fields are required.";
-        return;
-      }
-      if (form.new_password !== form.confirm_password) {
-        changePasswordStatus.value = "error:New passwords do not match.";
-        return;
-      }
-      changePasswordBusy.value = true;
-      try {
-        const res = await apiFetch("/v1/auth/me/password", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            current_password: form.current_password,
-            new_password: form.new_password,
-          }),
-        });
-        if (!res.ok) {
-          let detail = "";
-          try { detail = (await res.json()).detail || ""; } catch (_) {}
-          changePasswordStatus.value = `error:${detail || `Failed to change password (${res.status})`}`;
-          return;
-        }
-        changePasswordForm.value = { current_password: "", new_password: "", confirm_password: "" };
-        changePasswordStatus.value = "ok:Password changed successfully.";
-      } finally {
-        changePasswordBusy.value = false;
-      }
-    };
-
-    onMounted(async () => {
-      countdownTimerId = window.setInterval(() => {
-        clockNow.value = Date.now();
-      }, 1000);
-      fetch("/v1/version").then(r => r.ok ? r.json() : null).then(d => { if (d && d.version) appVersion.value = d.version; }).catch(() => {});
-      await fetchAuthStatus();
-      if (await loadCurrentUser()) {
-        await initializeAuthenticatedApp();
-      }
-      authReady.value = true;
+  list.querySelectorAll("button[data-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      state.selectedPromptChainId = Number(btn.dataset.id);
+      state.selectedPromptVersionNo = null;
+      state.promptChainAnalysisPoints = [];
+      await loadPromptChainDetails();
     });
+  });
+}
 
-    onBeforeUnmount(() => {
-      clearProactiveRefresh();
-      clearOptimizationPoll();
-      if (countdownTimerId !== null) {
-        window.clearInterval(countdownTimerId);
-        countdownTimerId = null;
-      }
+function renderPromptVersions(items) {
+  const list = $("promptVersionsList");
+  list.innerHTML = "";
+  for (const version of items) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <button class="thread-item-btn ${state.selectedPromptVersionNo === version.version_no ? "is-selected" : ""}" data-version="${version.version_no}">
+        <strong>v${version.version_no}</strong>
+        <span class="muted">${escapeHtml(version.created_at)} · ${escapeHtml(version.created_by_username)}</span>
+      </button>
+    `;
+    list.appendChild(li);
+  }
+
+  list.querySelectorAll("button[data-version]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      state.selectedPromptVersionNo = Number(btn.dataset.version);
+      await analyzePromptVersion();
+      await loadPromptVersionDetails();
+      await refreshPromptTests();
+      renderPromptVersions(items);
     });
+  });
+}
 
+function renderPromptTestRuns(items) {
+  const list = $("promptTestRunsList");
+  list.innerHTML = "";
+  for (const run of items) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <button class="thread-item-btn ${state.selectedPromptTestRunId === run.id ? "is-selected" : ""}" data-test-run-id="${escapeHtml(run.id)}">
+        <strong>${escapeHtml(run.created_at)}</strong>
+        <span class="muted">v${run.version_no} · ${escapeHtml(run.llm?.provider || "")}/${escapeHtml(run.llm?.model || "")}</span>
+      </button>
+    `;
+    list.appendChild(li);
+  }
+
+  list.querySelectorAll("button[data-test-run-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.selectedPromptTestRunId = btn.dataset.testRunId;
+      const row = state.promptTestRuns.find((item) => item.id === state.selectedPromptTestRunId);
+      if (row) {
+        renderPromptTestRunDetails(row);
+      }
+      renderPromptTestRuns(state.promptTestRuns);
+    });
+  });
+}
+
+function renderPromptTestRunPlaceholder(message = "Run a test to see full prompt logs and breakdown.") {
+  $("promptTestRunDetails").innerHTML = `<p class="analysis-placeholder">${escapeHtml(message)}</p>`;
+}
+
+function renderPromptTestRunDetails(run) {
+  const llm = run.llm || {};
+  const tokenUsage = run.token_usage || {};
+  const rag = run.rag || {};
+  const security = run.security || {};
+  $("promptTestRunDetails").innerHTML = `
+    <div class="analysis-grid">
+      <article class="analysis-card">
+        <p class="analysis-label">Run id</p>
+        <p class="analysis-value">${escapeHtml(String(run.id || ""))}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">LLM</p>
+        <p class="analysis-value">${escapeHtml(String(llm.provider || ""))}/${escapeHtml(String(llm.model || ""))}</p>
+        <p class="analysis-value-small">backend: ${escapeHtml(String(llm.backend || ""))} · invoked: ${llm.llm_invoked ? "yes" : "no"}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Latency</p>
+        <p class="analysis-value">${Number(run.latency_ms || 0).toFixed(2)} ms</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Token usage</p>
+        <p class="analysis-value">${Number(tokenUsage.total_tokens || 0)}</p>
+        <p class="analysis-value-small">prompt: ${Number(tokenUsage.prompt_tokens || 0)}, completion: ${Number(tokenUsage.completion_tokens || 0)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">RAG</p>
+        <p class="analysis-value">${rag.enabled ? "enabled" : "disabled"}</p>
+        <p class="analysis-value-small">top_k: ${Number(rag.top_k || 0)} · chunks: ${Array.isArray(rag.chunks) ? rag.chunks.length : 0}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Security risk</p>
+        <p class="analysis-value">inj ${Number(security.injection_risk || 0).toFixed(1)} · contra ${Number(security.contradiction_risk || 0).toFixed(1)}</p>
+        <p class="analysis-value-small">ambiguity: ${Number(security.ambiguity_risk || 0).toFixed(1)}</p>
+      </article>
+    </div>
+
+    <article class="analysis-card">
+      <p class="analysis-label">Prompt with RAG</p>
+      <pre class="json-box">${escapeHtml(String(run.prompt_with_rag || ""))}</pre>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">Full prompt</p>
+      <pre class="json-box">${escapeHtml(String(run.full_prompt || ""))}</pre>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">Fixed part</p>
+      <pre class="json-box">${escapeHtml(String(run.fixed_part || ""))}</pre>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">Semi-fixed part</p>
+      <pre class="json-box">${escapeHtml(String(run.semi_fixed_part || ""))}</pre>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">Variable part</p>
+      <pre class="json-box">${escapeHtml(String(run.variable_part || ""))}</pre>
+      <p class="analysis-value-small">variables: ${escapeHtml((run.variables || []).join(", "))}</p>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">LLM response</p>
+      <pre class="json-box">${escapeHtml(String(run.llm_response || ""))}</pre>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">LLM error</p>
+      <pre class="json-box">${escapeHtml(String(run.llm_error || ""))}</pre>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">Security markers</p>
+      <pre class="json-box">${escapeHtml(Array.isArray(security.markers) ? security.markers.join(", ") : "")}</pre>
+    </article>
+
+    <article class="analysis-card">
+      <p class="analysis-label">RAG chunks</p>
+      <pre class="json-box">${escapeHtml(Array.isArray(rag.chunks) ? rag.chunks.join("\n\n---\n\n") : "")}</pre>
+    </article>
+  `;
+}
+
+function renderPromptAnalysisTable(points) {
+  const tbody = $("promptChainMetricsTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const point of points) {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>v${point.version_no}</td>
+      <td>${point.tokens}</td>
+      <td>${point.reliability.toFixed(2)}</td>
+      <td>${point.cache_hit_probability.toFixed(2)}</td>
+      <td>${renderRiskCell(point.injection_risk)}</td>
+      <td>${renderRiskCell(point.contradiction_risk)}</td>
+      <td>${renderRiskCell(point.ambiguity_risk)}</td>
+      <td>${point.delta_tokens}</td>
+      <td>${point.delta_reliability.toFixed(2)}</td>
+      <td>${point.delta_cache_hit.toFixed(2)}</td>
+      <td>${Number(point.delta_injection_risk || 0).toFixed(2)}</td>
+      <td>${Number(point.delta_contradiction_risk || 0).toFixed(2)}</td>
+      <td>${Number(point.delta_ambiguity_risk || 0).toFixed(2)}</td>
+    `;
+    tbody.appendChild(row);
+  }
+}
+
+function renderPromptTrendChart(points) {
+  const container = $("promptChainTrendChart");
+  container.innerHTML = "";
+  if (!points.length) return;
+
+  const width = 720;
+  const height = 180;
+  const padding = 26;
+
+  const tokens = points.map((p) => p.tokens);
+  const reliabilities = points.map((p) => p.reliability);
+  const cacheHits = points.map((p) => p.cache_hit_probability);
+
+  const tokenMax = Math.max(...tokens, 1);
+  const lineX = (i) => padding + (i * (width - padding * 2)) / Math.max(1, points.length - 1);
+  const lineY = (value, max) => height - padding - (value / Math.max(1, max)) * (height - padding * 2);
+
+  const tokenLine = points.map((p, i) => `${lineX(i)},${lineY(p.tokens, tokenMax)}`).join(" ");
+  const relLine = points.map((p, i) => `${lineX(i)},${lineY(p.reliability, 100)}`).join(" ");
+  const cacheLine = points.map((p, i) => `${lineX(i)},${lineY(p.cache_hit_probability, 100)}`).join(" ");
+  const injectionLine = points.map((p, i) => `${lineX(i)},${lineY(Number(p.injection_risk || 0), 100)}`).join(" ");
+  const contradictionLine = points.map((p, i) => `${lineX(i)},${lineY(Number(p.contradiction_risk || 0), 100)}`).join(" ");
+  const ambiguityLine = points.map((p, i) => `${lineX(i)},${lineY(Number(p.ambiguity_risk || 0), 100)}`).join(" ");
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" width="100%" height="160" aria-label="Prompt version trends chart">
+      <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
+      <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" stroke="#cbd5e1" stroke-width="1" />
+      <line x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" stroke="#cbd5e1" stroke-width="1" />
+      <polyline fill="none" stroke="#2563eb" stroke-width="2.2" points="${tokenLine}" />
+      <polyline fill="none" stroke="#0f766e" stroke-width="2.2" points="${relLine}" />
+      <polyline fill="none" stroke="#9333ea" stroke-width="2.2" points="${cacheLine}" />
+      <polyline fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="5 4" points="${injectionLine}" />
+      <polyline fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="5 4" points="${contradictionLine}" />
+      <polyline fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="5 4" points="${ambiguityLine}" />
+      <text x="${padding}" y="16" fill="#2563eb" font-size="12">Tokens</text>
+      <text x="${padding + 70}" y="16" fill="#0f766e" font-size="12">Reliability %</text>
+      <text x="${padding + 190}" y="16" fill="#9333ea" font-size="12">Cache hit %</text>
+      <text x="${padding + 300}" y="16" fill="#ef4444" font-size="12">Injection</text>
+      <text x="${padding + 370}" y="16" fill="#f59e0b" font-size="12">Contradiction</text>
+      <text x="${padding + 480}" y="16" fill="#64748b" font-size="12">Ambiguity</text>
+    </svg>
+  `;
+}
+
+function formatPercent(value) {
+  return `${Number(value || 0).toFixed(2)}%`;
+}
+
+function formatSigned(value, digits = 2) {
+  const num = Number(value || 0);
+  const fixed = num.toFixed(digits);
+  return num > 0 ? `+${fixed}` : fixed;
+}
+
+function getRiskLevel(value) {
+  const score = Number(value || 0);
+  if (score >= 70) return "high";
+  if (score >= 35) return "medium";
+  return "low";
+}
+
+function renderRiskCell(value) {
+  const score = Number(value || 0);
+  const level = getRiskLevel(score);
+  const alpha = (0.12 + (Math.min(100, Math.max(0, score)) / 100) * 0.42).toFixed(2);
+  return `<span class="risk-chip risk-${level}" style="--risk-alpha:${alpha}">${score.toFixed(2)}</span>`;
+}
+
+function estimateTokensFromText(content) {
+  const text = String(content || "").trim();
+  if (!text) return 0;
+  const words = text.match(/[A-Za-z0-9_\u00C0-\u024F\u0400-\u04FF]+/g) || [];
+  const punctuation = text.match(/[.,!?;:()[\]{}<>"'`~@#$%^&*+=\\/|-]/g) || [];
+  const nonAscii = text.match(/[^\x00-\x7F]/g) || [];
+  const estimate = words.length + punctuation.length * 0.35 + nonAscii.length * 0.25;
+  return Math.max(1, Math.round(estimate));
+}
+
+function computeSecurityMetrics(text) {
+  const value = String(text || "").trim().toLowerCase();
+  const injectionMarkers = [
+    "ignore previous",
+    "disregard above",
+    "ignore all previous",
+    "ignore prior",
+    "system prompt",
+    "hidden prompt",
+    "developer mode",
+    "reveal hidden",
+    "reveal prompt",
+    "jailbreak",
+    "bypass",
+    "do anything now",
+    "игнорируй предыдущ",
+    "проигнорируй предыдущ",
+    "не следуй предыдущ",
+    "системный промпт",
+    "скрытый промпт",
+    "раскрой систем",
+    "режим разработчика",
+    "джейлбрейк",
+    "обойди ограничени",
+  ];
+  const contradictionPairs = [
+    ["always", "never"],
+    ["must", "optional"],
+    ["strict", "flexible"],
+    ["only", "any"],
+    ["всегда", "никогда"],
+    ["должен", "необязательно"],
+    ["обязательно", "опционально"],
+    ["только", "любой"],
+    ["строго", "гибко"],
+  ];
+  const ambiguityMarkers = [
+    "maybe",
+    "possibly",
+    "etc",
+    "somehow",
+    "approximately",
+    "around",
+    "perhaps",
+    "kind of",
+    "more or less",
+    "может",
+    "возможно",
+    "как-нибудь",
+    "примерно",
+    "около",
+    "и т.д",
+    "и тп",
+    "по возможности",
+  ];
+
+  let injectionHits = 0;
+  const markers = [];
+  for (const marker of injectionMarkers) {
+    if (value.includes(marker)) {
+      injectionHits += 1;
+      markers.push(marker);
+    }
+  }
+
+  let contradictionHits = 0;
+  for (const [left, right] of contradictionPairs) {
+    if (value.includes(left) && value.includes(right)) {
+      contradictionHits += 1;
+      markers.push(`${left}<->${right}`);
+    }
+  }
+
+  let ambiguityHits = 0;
+  for (const marker of ambiguityMarkers) {
+    ambiguityHits += Math.max(0, value.split(marker).length - 1);
+  }
+
+  return {
+    injection_risk: injectionHits ? Math.min(100, Number((20 + injectionHits * 18).toFixed(2))) : 0,
+    contradiction_risk: contradictionHits ? Math.min(100, Number((15 + contradictionHits * 22).toFixed(2))) : 0,
+    ambiguity_risk: ambiguityHits ? Math.min(100, Number((10 + ambiguityHits * 9).toFixed(2))) : 0,
+    markers,
+  };
+}
+
+const THREAD_CHART_LABEL_MODE_OPTIONS = [
+  { key: "all", title: "Labels: All" },
+  { key: "smart", title: "Labels: Smart" },
+  { key: "off", title: "Labels: Off" },
+];
+
+function updateThreadChartLabelModeButton() {
+  const button = $("threadChartLabelModeBtn");
+  if (!button) return;
+  const option = THREAD_CHART_LABEL_MODE_OPTIONS.find((item) => item.key === state.threadChartLabelMode);
+  button.textContent = option?.title || "Labels: Smart";
+}
+
+function cycleThreadChartLabelMode() {
+  const currentIndex = THREAD_CHART_LABEL_MODE_OPTIONS.findIndex((item) => item.key === state.threadChartLabelMode);
+  const next = THREAD_CHART_LABEL_MODE_OPTIONS[(currentIndex + 1) % THREAD_CHART_LABEL_MODE_OPTIONS.length];
+  state.threadChartLabelMode = next.key;
+  updateThreadChartLabelModeButton();
+  if (state.threadAnalysisReport && state.threadAnalysisMessages.length) {
+    renderThreadAnalysis(state.threadAnalysisReport, state.threadAnalysisMessages);
+  }
+}
+
+function renderThreadTrendChart(messages, securityTrend = []) {
+  const chartEl = $("threadTrendChart");
+  if (!chartEl) return;
+
+  chartEl.innerHTML = "";
+  if (!messages.length) return;
+
+  const width = 760;
+  const height = 190;
+  const padding = 26;
+
+  let userCumulative = 0;
+  let toolCumulative = 0;
+  const points = messages.map((msg, index) => {
+    const role = String(msg.role || "").toLowerCase();
+    if (role === "user") userCumulative += 1;
+    if (role === "tool") toolCumulative += 1;
+
+    const chars = String(msg.content || "").length;
+    const tokens = estimateTokensFromText(msg.content || "");
     return {
-      appVersion,
-      authReady, authToken, currentUser, authMode, authForm, authError, authStatus, authBusy, authBootstrapRequired, isAuthenticated, isAdmin, isViewer, canViewAdmin, canWrite, currentUserProjectsLabel,
-      activeTab, form, createStatus,
-      items, filterProject, filterTag, fetchPrompts, browsePage, browsePageSize, browseTotalItems, totalBrowsePages, paginatedItems, setBrowsePage, browseSummaryLabel,
-      browseSortBy, browseSortOrder,
-      expandedKey, expandedVersions, openVersionKey,
-      editTagsMode, editTagsStr, newVersionRole, newVersionTask, newVersionContext, newVersionConstraints, newVersionOutputFormat, newVersionExamples, saveStatus,
-      newVersionEditorOpen,
-      createOptimizeMenuOpen, browseOptimizeMenuKey,
-      optimizerModalOpen, optimizerLoading, optimizerError, optimizerStatus, optimizerMode, optimizerLogs, optimizerEngine, optimizerNotes, optimizerElapsedSeconds,
-      optimizerElapsedPercent, optimizerElapsedSeverity,
-      optimizedMarkdown, optimizedDraft,
-      optimizeConfig, optimizeConfigStatus, llmProviderOptions, availableLlmModels, llmModelsLoading, llmModelsLoadError,
-      globalConfigEntries, globalConfigLoading, globalConfigStatus,
-      roleOptions, projects, projectsLoading, projectsStatus, newProjectForm, editingProjectId, editProjectForm,
-      users, usersLoading, usersStatus, newUserForm, editingUserId, editUserForm, availableProjectNames,
-      plugins, pluginsLoading, pluginsStatus, pluginResponses,
-      pluginNameFilter, pluginTagFilters, pluginTagMatchMode, pluginFilterBarOpen, availablePluginTags, pluginTagFilterGroups, filteredPlugins,
-      key, togglePrompt, saveNewVersion, saveTags, createPrompt,
-      deletePrompt,
-      optimizeFromCreate,
-      optimizeFromBrowse,
-      applyOptimizedPrompt, reoptimizePrompt, saveOptimizeConfig, loadAvailableLlmModels, updateProviderBaseUrl, getProviderLabel, modelRequiresToken, closeOptimizerModal,
-      loadGlobalConfig, saveGlobalConfigEntry, resetGlobalConfigDraft,
-      getGlobalConfigControlType, getGlobalConfigOptions, setGlobalConfigBooleanDraft,
-      submitAuth, logout, createProjectRecord, beginEditProject, cancelProjectEdit, saveProjectEdit, deleteProjectRecord,
-      createUserAccount, beginEditUser, cancelUserEdit, saveUserEdit, deleteUserAccount, loadUsers, loadProjects,
-      loadPlugins, rescanPlugins, managePlugin, invokePluginControl,
-      pluginHasImageIcon, pluginIconFallback, getPluginControlValue, canUsePluginControl,
-      getPluginDiagnostics, isPluginDiagnosticsLoading, isPluginDiagnosticsOpen, togglePluginDiagnostics,
-      getPluginBlockedCount, getPluginFailureCount,
-      getPluginTags, togglePluginTagFilter, clearPluginFilters, togglePluginFilterBar, isPluginTagActive, setPluginTagMatchMode,
-      isPluginRoutesOpen, togglePluginRoutes,
-      getPluginModalLaunchers, pluginModalOpen, pluginModalLoading, pluginModalError, pluginModalStatus, pluginModalSession,
-      pluginModalTabs, pluginModalActiveTab, pluginModalBodyMarkdown, pluginModalCharts,
-      pluginModalControls, getPluginModalControlValue, openPluginModal, invokePluginModalControl, stopPluginModal, closePluginModal, refreshPluginModal,
-      selectPluginModalTab, getPluginModalChartPointStyle,
-      toggleProjectSelection, isProjectSelected,
-      visibleHeaderTags, hiddenHeaderTagCount,
-      formatUtcDateTime, formatAuditLine, accessTokenCountdown, nextRefreshCountdown, nextRefreshAt, accessTokenExpiresAt,
-      md, buildPromptMarkdown,
-      deleteStatus,
-      changePasswordForm, changePasswordStatus, changePasswordBusy, changeOwnPassword,
+      index,
+      chars,
+      tokens,
+      userCumulative,
+      toolCumulative,
     };
-  },
+  });
 
-  template: `
-    <div v-if="!authReady" class="auth-shell">
-      <div class="auth-card">
-        <h1 class="app-title"><img src="/P_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
-        <span v-if="appVersion" style="display:block;font-size:0.78rem;color:#9ca3af;margin:-6px 0 6px">v{{ appVersion }}</span>
-        <p class="subtitle">Loading session...</p>
-      </div>
+  const charsMax = Math.max(...points.map((p) => p.chars), 1);
+  const tokensMax = Math.max(...points.map((p) => p.tokens), 1);
+  const turnMax = Math.max(...points.map((p) => Math.max(p.userCumulative, p.toolCumulative)), 1);
+  const securityMax = Math.max(
+    1,
+    ...securityTrend.map((p) => Math.max(Number(p.injection_risk || 0), Number(p.contradiction_risk || 0), Number(p.ambiguity_risk || 0))),
+  );
+  const x = (i) => padding + (i * (width - padding * 2)) / Math.max(1, points.length - 1);
+  const y = (value, max) => height - padding - (value / Math.max(1, max)) * (height - padding * 2);
+
+  const charsLine = points.map((p, i) => `${x(i)},${y(p.chars, charsMax)}`).join(" ");
+  const tokensLine = points.map((p, i) => `${x(i)},${y(p.tokens, tokensMax)}`).join(" ");
+  const userLine = points.map((p, i) => `${x(i)},${y(p.userCumulative, turnMax)}`).join(" ");
+  const toolLine = points.map((p, i) => `${x(i)},${y(p.toolCumulative, turnMax)}`).join(" ");
+  const injectionLine = securityTrend.map((p, i) => `${x(i)},${y(Number(p.injection_risk || 0), securityMax)}`).join(" ");
+  const contradictionLine = securityTrend.map((p, i) => `${x(i)},${y(Number(p.contradiction_risk || 0), securityMax)}`).join(" ");
+  const ambiguityLine = securityTrend.map((p, i) => `${x(i)},${y(Number(p.ambiguity_risk || 0), securityMax)}`).join(" ");
+
+  const labelMode = state.threadChartLabelMode;
+  const labelStep = labelMode === "all" ? 1 : Math.max(1, Math.ceil(points.length / 14));
+  const charsLabels = points
+    .map((p, i) => {
+      const shouldLabel = labelMode !== "off" && (i === points.length - 1 || i % labelStep === 0);
+      if (!shouldLabel) return "";
+      const px = x(i);
+      const py = y(p.chars, charsMax);
+      return `<text x="${px + 4}" y="${py - 6}" fill="#1d4ed8" font-size="10">${p.chars}</text>`;
+    })
+    .join("");
+
+  const tokensLabels = points
+    .map((p, i) => {
+      const shouldLabel = labelMode !== "off" && (i === points.length - 1 || i % labelStep === 0);
+      if (!shouldLabel) return "";
+      const px = x(i);
+      const py = y(p.tokens, tokensMax);
+      return `<text x="${px + 4}" y="${py + 12}" fill="#0f766e" font-size="10">${p.tokens}</text>`;
+    })
+    .join("");
+
+  chartEl.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" width="100%" height="170" aria-label="Thread trend chart">
+      <rect x="0" y="0" width="${width}" height="${height}" fill="transparent"></rect>
+      <line x1="${padding}" y1="${height - padding}" x2="${width - padding}" y2="${height - padding}" stroke="#cbd5e1" stroke-width="1" />
+      <line x1="${padding}" y1="${padding}" x2="${padding}" y2="${height - padding}" stroke="#cbd5e1" stroke-width="1" />
+      <polyline fill="none" stroke="#2563eb" stroke-width="2.2" points="${charsLine}" />
+      <polyline fill="none" stroke="#0f766e" stroke-width="2.2" points="${tokensLine}" />
+      <polyline fill="none" stroke="#d97706" stroke-width="2.2" points="${userLine}" />
+      <polyline fill="none" stroke="#7c3aed" stroke-width="2.2" points="${toolLine}" />
+      <polyline fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="5 4" points="${injectionLine}" />
+      <polyline fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="5 4" points="${contradictionLine}" />
+      <polyline fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="5 4" points="${ambiguityLine}" />
+      ${charsLabels}
+      ${tokensLabels}
+      <text x="${padding}" y="16" fill="#2563eb" font-size="12">Chars / message</text>
+      <text x="${padding + 120}" y="16" fill="#0f766e" font-size="12">Tokens / message</text>
+      <text x="${padding + 250}" y="16" fill="#d97706" font-size="12">User turns (cumulative)</text>
+      <text x="${padding + 440}" y="16" fill="#7c3aed" font-size="12">Tool turns (cumulative)</text>
+      <text x="${padding + 620}" y="16" fill="#ef4444" font-size="12">Inj/Contra/Amb</text>
+    </svg>
+  `;
+}
+
+function renderThreadAnalysisPlaceholder(message = "Click Analyze to build a report for this thread.") {
+  state.threadAnalysisReport = null;
+  state.threadAnalysisMessages = [];
+  $("analyzeOutput").innerHTML = `<p class="analysis-placeholder">${escapeHtml(message)}</p>`;
+}
+
+function renderThreadAnalysisLogPlaceholder(message = "Run Prompt Orchestrator improve + analyze to inspect the improvement log.") {
+  state.threadAnalysisLog = null;
+  $("threadAnalysisLog").innerHTML = `<p class="analysis-placeholder">${escapeHtml(message)}</p>`;
+}
+
+function renderThreadAnalysisLog(logPayload) {
+  state.threadAnalysisLog = logPayload;
+  const generatedAt = logPayload.generated_at ? new Date(logPayload.generated_at) : null;
+  const analysis = logPayload.analysis || {};
+  const logText = String(logPayload.log_text || "");
+
+  $("threadAnalysisLog").innerHTML = `
+    <div class="analysis-grid">
+      <article class="analysis-card">
+        <p class="analysis-label">Generated at</p>
+        <p class="analysis-value">${generatedAt && Number.isFinite(generatedAt.getTime()) ? escapeHtml(generatedAt.toLocaleString()) : escapeHtml(String(logPayload.generated_at || ""))}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Log path</p>
+        <p class="analysis-value-small">${escapeHtml(logPayload.log_path || "")}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Turns</p>
+        <p class="analysis-value">${Number(analysis.turns || 0)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Total chars</p>
+        <p class="analysis-value">${Number(analysis.total_chars || 0)}</p>
+      </article>
+    </div>
+    <div class="table-wrap">
+      <pre class="log-output">${escapeHtml(logText)}</pre>
+    </div>
+  `;
+}
+
+function renderThreadAnalysis(report, messages = []) {
+  const turns = Number(report.turns || 0);
+  const totalChars = Number(report.total_chars || 0);
+  const avgChars = turns ? (totalChars / turns).toFixed(1) : "0.0";
+  const totalTokens = messages.reduce((sum, msg) => sum + estimateTokensFromText(msg.content), 0);
+
+  const userChars = messages
+    .filter((msg) => String(msg.role || "").toLowerCase() === "user")
+    .reduce((sum, msg) => sum + String(msg.content || "").length, 0);
+  const toolChars = messages
+    .filter((msg) => String(msg.role || "").toLowerCase() === "tool")
+    .reduce((sum, msg) => sum + String(msg.content || "").length, 0);
+  const userTokens = Math.max(0, Math.round(userChars / 4));
+  const toolTokens = Math.max(0, Math.round(toolChars / 4));
+  const securityByMessage = messages.map((msg, index) => ({
+    seq_no: Number(msg.seq_no || index + 1),
+    ...computeSecurityMetrics(msg.content || ""),
+  }));
+  const totalSecurity = computeSecurityMetrics(messages.map((msg) => String(msg.content || "")).join("\n"));
+
+  const roleRows = [
+    { role: "user", count: Number(report.user_turns || 0) },
+    { role: "assistant", count: Number(report.assistant_turns || 0) },
+    { role: "system", count: Number(report.system_turns || 0) },
+    { role: "tool", count: Number(report.tool_turns || 0) },
+  ];
+
+  const startedAt = report.started_at ? new Date(report.started_at) : null;
+  const endedAt = report.ended_at ? new Date(report.ended_at) : null;
+  const durationSeconds =
+    startedAt && endedAt && Number.isFinite(startedAt.getTime()) && Number.isFinite(endedAt.getTime())
+      ? Math.max(0, (endedAt.getTime() - startedAt.getTime()) / 1000)
+      : null;
+
+  const bars = roleRows
+    .map((row) => {
+      const share = turns ? (row.count / turns) * 100 : 0;
+      return `
+        <div class="role-bar-row">
+          <strong>${escapeHtml(row.role)}</strong>
+          <div class="role-bar-track"><div class="role-bar-fill" style="width:${share.toFixed(2)}%"></div></div>
+          <span>${row.count} (${share.toFixed(1)}%)</span>
+        </div>
+      `;
+    })
+    .join("");
+
+  const tableRows = roleRows
+    .map((row) => {
+      const share = turns ? (row.count / turns) * 100 : 0;
+      return `<tr><td>${escapeHtml(row.role)}</td><td>${row.count}</td><td>${share.toFixed(2)}%</td></tr>`;
+    })
+    .join("");
+
+  $("analyzeOutput").innerHTML = `
+    <div class="analysis-grid">
+      <article class="analysis-card">
+        <p class="analysis-label">Turns</p>
+        <p class="analysis-value">${turns}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Total chars</p>
+        <p class="analysis-value">${totalChars}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Avg chars / turn</p>
+        <p class="analysis-value">${avgChars}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Estimated tokens (thread)</p>
+        <p class="analysis-value">${totalTokens}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Duration</p>
+        <p class="analysis-value">${durationSeconds === null ? "n/a" : `${durationSeconds.toFixed(1)}s`}</p>
+        <p class="analysis-value-small">${escapeHtml(report.started_at || "")}${report.started_at && report.ended_at ? " -> " : ""}${escapeHtml(report.ended_at || "")}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">User content</p>
+        <p class="analysis-value">${userChars} chars</p>
+        <p class="analysis-value-small">~${userTokens} tokens</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Tool content</p>
+        <p class="analysis-value">${toolChars} chars</p>
+        <p class="analysis-value-small">~${toolTokens} tokens</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Injection risk</p>
+        <p class="analysis-value">${Number(totalSecurity.injection_risk || 0).toFixed(2)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Contradiction risk</p>
+        <p class="analysis-value">${Number(totalSecurity.contradiction_risk || 0).toFixed(2)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Ambiguity risk</p>
+        <p class="analysis-value">${Number(totalSecurity.ambiguity_risk || 0).toFixed(2)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Security markers (thread)</p>
+        <p class="analysis-value-small">${escapeHtml((totalSecurity.markers || []).join(", ") || "-")}</p>
+      </article>
     </div>
 
-    <div v-else-if="!isAuthenticated" class="auth-shell">
-      <div class="auth-card">
-        <h1 class="app-title"><img src="/P_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan</h1>
-        <span v-if="appVersion" style="display:block;font-size:0.78rem;color:#9ca3af;margin:-6px 0 6px">v{{ appVersion }}</span>
-        <p class="subtitle">{{ authBootstrapRequired ? 'Create the first admin account for this workspace.' : 'Sign in to access prompts and personal optimization config.' }}</p>
-        <p class="auth-helper">Access token lifetime is 30 minutes. The UI refreshes the session automatically while the refresh token is still valid.</p>
-        <div class="field">
-          <label>Username</label>
-          <input v-model="authForm.username" placeholder="admin" />
-        </div>
-        <div class="field">
-          <label>Password</label>
-          <input type="password" v-model="authForm.password" placeholder="Enter password" @keyup.enter="submitAuth" />
-        </div>
-        <div class="btn-row auth-actions">
-          <button @click="submitAuth" :disabled="authBusy || !authForm.username.trim() || !authForm.password">{{ authBusy ? 'Please wait...' : (authMode === 'bootstrap' ? 'Create Admin' : 'Sign In') }}</button>
-          <button class="ghost" v-if="!authBootstrapRequired" @click="authMode='login'">Use login</button>
-        </div>
-        <p v-if="authStatus" class="status-ok">{{ authStatus }}</p>
-        <p v-if="authError" class="status-err">{{ authError }}</p>
-      </div>
+    <div id="threadTrendChart" class="trend-chart"></div>
+    <p class="chart-caption">Trend by message position: chars/tokens per message, plus cumulative user/tool turns.</p>
+
+    <article class="analysis-card">
+      <p class="analysis-label">Role distribution</p>
+      <div class="role-bars">${bars}</div>
+    </article>
+
+    <div class="table-wrap">
+      <table class="metrics-table">
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Turns</th>
+            <th>Share</th>
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
     </div>
 
-    <template v-else>
-    <header style="margin-bottom:4px">
-      <div class="header-topline">
-        <div>
-          <h1 class="app-title"><img src="/P_240x240.png" alt="" class="app-title-icon" aria-hidden="true" />PromptMan <span v-if="appVersion" style="font-size:0.55em;color:#9ca3af;font-weight:400;vertical-align:middle">v{{ appVersion }}</span></h1>
-          <p class="subtitle">Versioned prompts with tags, markdown, and per-user optimization config.</p>
-        </div>
-        <div class="auth-banner">
-          <div>
-            <div class="auth-banner-user">{{ currentUser.username }}</div>
-            <div class="auth-banner-meta">Role: {{ currentUser.role }} | Projects: {{ currentUserProjectsLabel }}</div>
-          </div>
-          <button class="ghost" @click="logout">Logout</button>
-        </div>
-      </div>
-    </header>
-
-    <div class="tabs">
-      <button class="tab-btn" :class="{active: activeTab==='browse'}" @click="activeTab='browse'">Browse</button>
-      <button v-if="canWrite" class="tab-btn" :class="{active: activeTab==='create'}" @click="activeTab='create'">+ Create</button>
-      <button class="tab-btn" :class="{active: activeTab==='config'}" @click="activeTab='config'">Config</button>
-      <button class="tab-btn" :class="{active: activeTab==='plugins'}" @click="activeTab='plugins'">Plugins</button>
-      <button v-if="canViewAdmin" class="tab-btn" :class="{active: activeTab==='admin'}" @click="activeTab='admin'">Admin</button>
-      <button class="tab-btn" :class="{active: activeTab==='account'}" @click="activeTab='account'">Account</button>
-      <button class="tab-btn" :class="{active: activeTab==='about'}" @click="activeTab='about'">About</button>
+    <div class="table-wrap">
+      <table class="metrics-table">
+        <thead>
+          <tr>
+            <th>Message #</th>
+            <th>Injection risk</th>
+            <th>Contradiction risk</th>
+            <th>Ambiguity risk</th>
+            <th>Markers</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${securityByMessage
+            .map(
+              (item) => `<tr><td>${item.seq_no}</td><td>${renderRiskCell(item.injection_risk)}</td><td>${renderRiskCell(item.contradiction_risk)}</td><td>${renderRiskCell(item.ambiguity_risk)}</td><td>${escapeHtml((item.markers || []).join(", ") || "-")}</td></tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
     </div>
 
-    <!-- BROWSE TAB -->
-    <div class="tab-panel" v-if="activeTab==='browse'">
-      <div class="filter-row">
-        <div class="field">
-          <label>Project</label>
-          <select v-model="filterProject">
-            <option value="">All projects</option>
-            <option v-for="projectName in availableProjectNames" :key="projectName">{{ projectName }}</option>
+    <p class="analysis-note">Thread security metrics are computed heuristically from message content (injection/contradiction/ambiguity).</p>
+  `;
+
+  renderThreadTrendChart(messages, securityByMessage);
+}
+
+function renderPromptVersionAnalysis(report, point = null) {
+  const tokens = Number(report.tokens || 0);
+  const reliability = Number(report.reliability || 0);
+  const cacheHit = Number(report.cache_hit_probability || 0);
+  const deltaTokensText = point ? formatSigned(point.delta_tokens, 0) : "-";
+  const deltaReliabilityText = point ? formatSigned(point.delta_reliability, 2) : "-";
+  const deltaCacheHitText = point ? formatSigned(point.delta_cache_hit, 2) : "-";
+
+  $("promptVersionAnalysis").innerHTML = `
+    <div class="analysis-grid">
+      <article class="analysis-card">
+        <p class="analysis-label">Version</p>
+        <p class="analysis-value">v${Number(report.version_no || 0)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Tokens</p>
+        <p class="analysis-value">${tokens}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Reliability</p>
+        <p class="analysis-value">${formatPercent(reliability)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Cache hit probability</p>
+        <p class="analysis-value">${formatPercent(cacheHit)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Injection risk</p>
+        <p class="analysis-value">${Number(report.injection_risk || 0).toFixed(2)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Contradiction risk</p>
+        <p class="analysis-value">${Number(report.contradiction_risk || 0).toFixed(2)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Ambiguity risk</p>
+        <p class="analysis-value">${Number(report.ambiguity_risk || 0).toFixed(2)}</p>
+      </article>
+    </div>
+
+    <div class="table-wrap">
+      <table class="metrics-table">
+        <thead>
+          <tr>
+            <th>Tokens</th>
+            <th>Reliability</th>
+            <th>Cache hit %</th>
+            <th>Delta tokens</th>
+            <th>Delta reliability</th>
+            <th>Delta cache %</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>${tokens}</td>
+            <td>${reliability.toFixed(2)}</td>
+            <td>${cacheHit.toFixed(2)}</td>
+            <td>${deltaTokensText}</td>
+            <td>${deltaReliabilityText}</td>
+            <td>${deltaCacheHitText}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="analysis-note">Delta values are relative to the previous version in the same chain.</p>
+    <p class="analysis-note">Security markers: ${escapeHtml((report.security_markers || []).join(", ")) || "-"}</p>
+  `;
+}
+
+function renderPromptOrchestratorPreviewPlaceholder(message = "Select an action from Analyze to inspect an orchestrated prompt preview.") {
+  state.promptOrchestratorPreview = null;
+  $("promptOrchestratorPreview").innerHTML = `<p class="analysis-placeholder">${escapeHtml(message)}</p>`;
+  $("promptOrchestratorLog").innerHTML = `<p class="analysis-placeholder">The backend preview log will appear here.</p>`;
+}
+
+function extractOrchestratorMode(recommendations, prefix) {
+  const rows = Array.isArray(recommendations) ? recommendations : [];
+  const normalizedPrefix = String(prefix || "").trim().toLowerCase();
+  const source = rows.find((item) => String(item || "").trim().toLowerCase().startsWith(normalizedPrefix));
+  const raw = String(source || "").trim();
+  const details = raw.includes(":") ? raw.split(":").slice(1).join(":").trim() : "";
+  const loweredDetails = details.toLowerCase();
+
+  if (!raw) {
+    return { label: "unknown", details: "Mode not reported" };
+  }
+  if (loweredDetails.startsWith("live llm")) {
+    return { label: "live", details: details || "Live LLM" };
+  }
+  if (loweredDetails.startsWith("fallback")) {
+    return { label: "fallback", details: details || "Fallback" };
+  }
+  return { label: "unknown", details: details || raw };
+}
+
+function renderModeBadge(title, mode) {
+  const safeTitle = escapeHtml(String(title || ""));
+  const label = String(mode?.label || "unknown").toLowerCase();
+  const details = escapeHtml(String(mode?.details || ""));
+  return `
+    <article class="analysis-card">
+      <p class="analysis-label">${safeTitle}</p>
+      <p class="analysis-value"><span class="mode-badge mode-badge-${label}">${label.toUpperCase()}</span></p>
+      <p class="analysis-value-small">${details}</p>
+    </article>
+  `;
+}
+
+function renderPromptOrchestratorPreview(report) {
+  state.promptOrchestratorPreview = report;
+  const analysis = report.analysis || {};
+  const retrievedContext = Array.isArray(report.retrieved_context) ? report.retrieved_context : [];
+  const recommendations = Array.isArray(report.recommendations) ? report.recommendations : [];
+  const optimizerMode = extractOrchestratorMode(recommendations, "optimizer mode:");
+  const compressionMode = extractOrchestratorMode(recommendations, "compression mode:");
+
+  $("promptOrchestratorPreview").innerHTML = `
+    <div class="analysis-grid">
+      <article class="analysis-card">
+        <p class="analysis-label">Chain</p>
+        <p class="analysis-value">${escapeHtml(report.chain_name || "")}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Version</p>
+        <p class="analysis-value">v${Number(report.version_no || 0)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Tokens</p>
+        <p class="analysis-value">${Number(analysis.tokens || 0)}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Reliability</p>
+        <p class="analysis-value">${formatPercent(Number(analysis.reliability || 0))}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Cache hit</p>
+        <p class="analysis-value">${formatPercent(Number(analysis.cache_hit_probability || 0))}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Security</p>
+        <p class="analysis-value">${renderRiskCell(Number(analysis.injection_risk || 0))} / ${renderRiskCell(Number(analysis.contradiction_risk || 0))} / ${renderRiskCell(Number(analysis.ambiguity_risk || 0))}</p>
+      </article>
+      ${renderModeBadge("Optimizer mode", optimizerMode)}
+      ${renderModeBadge("Compression mode", compressionMode)}
+    </div>
+
+    <div class="table-wrap">
+      <table class="metrics-table">
+        <thead>
+          <tr>
+            <th>Retrieved context</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${retrievedContext.length ? retrievedContext.map((chunk) => `<tr><td>${escapeHtml(chunk)}</td></tr>`).join("") : `<tr><td class="muted">(none)</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <table class="metrics-table">
+        <thead>
+          <tr><th>Recommendations</th></tr>
+        </thead>
+        <tbody>
+          ${recommendations.length ? recommendations.map((item) => `<tr><td>${escapeHtml(item)}</td></tr>`).join("") : `<tr><td class="muted">(none)</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="table-wrap">
+      <table class="metrics-table">
+        <thead>
+          <tr><th>Improved prompt</th></tr>
+        </thead>
+        <tbody><tr><td><pre class="log-output">${escapeHtml(String(report.improved_prompt || ""))}</pre></td></tr></tbody>
+      </table>
+    </div>
+  `;
+
+  $("promptOrchestratorLog").innerHTML = `
+    <div class="analysis-card">
+      <p class="analysis-label">Log path</p>
+      <p class="analysis-value-small">${escapeHtml(report.log_path || "")}</p>
+    </div>
+    <div class="table-wrap">
+      <pre class="log-output">${escapeHtml(String(report.log_text || ""))}</pre>
+    </div>
+  `;
+}
+
+async function previewPromptOrchestrator() {
+  if (!state.selectedPromptChainId || !state.selectedPromptVersionNo) {
+    return;
+  }
+  try {
+    const report = await api(
+      `/v1/prompt-versions/chains/${state.selectedPromptChainId}/versions/${state.selectedPromptVersionNo}/orchestrate`,
+      { method: "POST" },
+    );
+    renderPromptOrchestratorPreview(report);
+  } catch (error) {
+    $("promptOrchestratorPreview").innerHTML = `<p class="analysis-placeholder">Orchestrator preview failed: ${escapeHtml(error.message)}</p>`;
+    $("promptOrchestratorLog").innerHTML = `<p class="analysis-placeholder">The backend preview log could not be loaded.</p>`;
+  }
+}
+
+function renderSettingsTable() {
+  const tbody = $("settingsTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  const runtimeCacheBackendOptions = ["memory", "redis", "garnet", "none"];
+
+  const isBooleanLike = (raw) => {
+    const normalized = String(raw ?? "").trim().toLowerCase();
+    return normalized === "true" || normalized === "false";
+  };
+
+  const hiddenInRawTable = new Set([
+    "OPTIMIZER_PROVIDER",
+    "OPTIMIZER_MODEL",
+    "OPTIMIZER_BASE_URL",
+    "OPTIMIZER_BACKEND",
+    "OPTIMIZER_API_TOKEN",
+    "PROMPT_COMPRESSION_PROVIDER",
+    "PROMPT_COMPRESSION_MODEL",
+    "PROMPT_COMPRESSION_BASE_URL",
+    "PROMPT_COMPRESSION_BACKEND",
+    "PROMPT_COMPRESSION_API_TOKEN",
+    "TEST_LLM_PROVIDER",
+    "TEST_LLM_MODEL",
+    "TEST_LLM_BASE_URL",
+    "TEST_LLM_API_TOKEN",
+    "TEST_LLM_TIMEOUT_SECONDS",
+    "TEST_LLM_USE_OPTIMIZER_FALLBACK",
+    "TEST_RAG_ENABLED",
+    "TEST_RAG_SOURCE_PATH",
+    "TEST_RAG_TOP_K",
+  ]);
+
+  const keys = Object.keys(state.settings)
+    .filter((key) => !hiddenInRawTable.has(key))
+    .sort((a, b) => a.localeCompare(b));
+  for (const key of keys) {
+    const value = state.settings[key] ?? "";
+    const row = document.createElement("tr");
+    const keyEscaped = escapeHtml(key);
+    const valueEscaped = escapeHtml(value);
+
+    if (key === "PROMPTMAN_RUNTIME_CACHE_BACKEND") {
+      const optionsHtml = runtimeCacheBackendOptions
+        .map((option) => `<option value="${option}" ${option === value ? "selected" : ""}>${option}</option>`)
+        .join("");
+      row.innerHTML = `
+        <td>${keyEscaped}</td>
+        <td>
+          <select class="settings-row-input" data-key="${keyEscaped}" data-input-kind="select">
+            ${optionsHtml}
           </select>
-        </div>
-        <div class="field">
-          <label>Tag</label>
-          <input v-model="filterTag" placeholder="production" />
-        </div>
-        <div style="padding-bottom:1px">
-          <button class="secondary" @click="fetchPrompts">Refresh</button>
-        </div>
-      </div>
-
-      <div class="browse-toolbar" v-if="browseTotalItems>0">
-        <p class="browse-summary">{{ browseSummaryLabel }}</p>
-        <div class="browse-pagination-controls">
-          <label class="browse-page-size-label browse-sort-label">
-            Sort by
-            <select v-model="browseSortBy" @change="fetchPrompts(1)">
-              <option value="updated_at">Last modified</option>
-              <option value="created_at">Created time</option>
-              <option value="name">Name</option>
-              <option value="project">Project</option>
-            </select>
+        </td>
+        <td><button class="secondary" data-save-key="${keyEscaped}">Save</button></td>
+      `;
+    } else if (isBooleanLike(value)) {
+      const checkedAttr = String(value).trim().toLowerCase() === "true" ? "checked" : "";
+      row.innerHTML = `
+        <td>${keyEscaped}</td>
+        <td>
+          <label class="switch" aria-label="${keyEscaped}">
+            <input type="checkbox" data-key="${keyEscaped}" data-input-kind="boolean" ${checkedAttr} />
+            <span class="slider"></span>
           </label>
-          <label class="browse-page-size-label browse-sort-label">
-            Order
-            <select v-model="browseSortOrder" @change="fetchPrompts(1)">
-              <option value="desc">Descending</option>
-              <option value="asc">Ascending</option>
-            </select>
-          </label>
-          <label class="browse-page-size-label">
-            Per page
-            <select v-model.number="browsePageSize" @change="fetchPrompts(1)">
-              <option :value="5">5</option>
-              <option :value="10">10</option>
-              <option :value="20">20</option>
-              <option :value="50">50</option>
-            </select>
-          </label>
-        </div>
+        </td>
+        <td><button class="secondary" data-save-key="${keyEscaped}">Save</button></td>
+      `;
+    } else {
+      row.innerHTML = `
+        <td>${keyEscaped}</td>
+        <td><input class="settings-row-input" data-key="${keyEscaped}" data-input-kind="text" value="${valueEscaped}" /></td>
+        <td><button class="secondary" data-save-key="${keyEscaped}">Save</button></td>
+      `;
+    }
+
+    tbody.appendChild(row);
+  }
+
+  tbody.querySelectorAll("button[data-save-key]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const key = btn.dataset.saveKey;
+      const input = tbody.querySelector(`[data-key='${CSS.escape(key)}']`);
+      if (!input) return;
+
+      let value;
+      const kind = input.dataset.inputKind;
+      if (kind === "boolean") {
+        value = input.checked ? "true" : "false";
+      } else {
+        value = input.value;
+      }
+      await saveSetting(key, value);
+    });
+  });
+}
+
+function getDefaultProviderBaseUrl(providerName) {
+  const provider = state.providerMeta.providers.find((p) => p.name === providerName);
+  return provider?.default_base_url || "";
+}
+
+function renderProviderSelectOptions(selectEl, selected) {
+  selectEl.innerHTML = "";
+  for (const provider of state.providerMeta.providers) {
+    const option = document.createElement("option");
+    option.value = provider.name;
+    option.textContent = provider.name;
+    option.selected = provider.name === selected;
+    selectEl.appendChild(option);
+  }
+}
+
+function renderBackendSelectOptions(selectEl, selected) {
+  selectEl.innerHTML = "";
+  for (const backendName of state.providerMeta.backends) {
+    const option = document.createElement("option");
+    option.value = backendName;
+    option.textContent = backendName;
+    option.selected = backendName === selected;
+    selectEl.appendChild(option);
+  }
+}
+
+function renderModelSelectOptions(selectEl, models) {
+  selectEl.innerHTML = "";
+  if (!models.length) {
+    return;
+  }
+
+  for (const modelName of models) {
+    const option = document.createElement("option");
+    option.value = modelName;
+    option.textContent = modelName;
+    selectEl.appendChild(option);
+  }
+}
+
+function updateLlmSaveButtonsState() {
+  const pairs = [
+    { modelId: "optimizerModel", buttonId: "saveOptimizerSettingsBtn", label: "optimizer" },
+    { modelId: "compressionModel", buttonId: "saveCompressionSettingsBtn", label: "compression" },
+    { modelId: "testLlmModel", buttonId: "saveTestLlmSettingsBtn", label: "test" },
+  ];
+
+  for (const pair of pairs) {
+    const modelSelect = $(pair.modelId);
+    const saveButton = $(pair.buttonId);
+    if (!modelSelect || !saveButton) continue;
+    const hasModel = Boolean(String(modelSelect.value || "").trim());
+    saveButton.disabled = !hasModel;
+    saveButton.title = hasModel ? "" : `Reload ${pair.label} models and select one before saving`;
+  }
+}
+
+async function loadProviderMeta() {
+  const payload = await api("/v1/admin/config/meta/providers");
+  state.providerMeta = {
+    providers: Array.isArray(payload.providers) ? payload.providers : [],
+    backends: Array.isArray(payload.backends) ? payload.backends : [],
+  };
+}
+
+function roleLabel(roleName) {
+  if (roleName === "admin") return "administrator";
+  return roleName;
+}
+
+function roleValueFromLabel(labelOrValue) {
+  if (labelOrValue === "administrator") return "admin";
+  return labelOrValue;
+}
+
+async function loadRoles() {
+  const rows = await api("/v1/roles");
+  state.roleOptions = Array.isArray(rows) ? rows.map((r) => r.name) : [];
+}
+
+function renderUserRoleOptions() {
+  const selectEl = $("newUserRole");
+  selectEl.innerHTML = "";
+  const allowedOrder = ["admin", "developer", "viewer"];
+  const available = allowedOrder.filter((role) => state.roleOptions.includes(role));
+
+  for (const roleName of available) {
+    const option = document.createElement("option");
+    option.value = roleName;
+    option.textContent = roleLabel(roleName);
+    selectEl.appendChild(option);
+  }
+
+  if (!available.length) {
+    const fallback = document.createElement("option");
+    fallback.value = "developer";
+    fallback.textContent = "developer";
+    selectEl.appendChild(fallback);
+  }
+}
+
+function renderUsersTable(items) {
+  const tbody = $("usersTable").querySelector("tbody");
+  tbody.innerHTML = "";
+
+  const availableRoles = ["admin", "developer", "viewer"].filter((roleName) => state.roleOptions.includes(roleName));
+
+  for (const user of items) {
+    const userRole = user.role || "developer";
+    const roleChoices = availableRoles.includes(userRole) ? availableRoles : [userRole, ...availableRoles];
+    const roleOptionsHtml = roleChoices
+      .map(
+        (roleName) =>
+          `<option value="${escapeHtml(roleName)}" ${roleName === userRole ? "selected" : ""}>${escapeHtml(roleLabel(roleName))}</option>`,
+      )
+      .join("");
+    const activeChecked = user.is_active ? "checked" : "";
+
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td>${escapeHtml(user.username)}</td>
+      <td>
+        <select class="settings-row-input" data-user-id="${user.id}" data-user-field="role">
+          ${roleOptionsHtml}
+        </select>
+      </td>
+      <td>
+        <label class="switch switch-sm" aria-label="${escapeHtml(user.username)} active">
+          <input type="checkbox" data-user-id="${user.id}" data-user-field="is_active" ${activeChecked} />
+          <span class="slider"></span>
+        </label>
+      </td>
+      <td><button class="secondary" data-save-user-id="${user.id}">Save</button></td>
+    `;
+    tbody.appendChild(row);
+  }
+
+  tbody.querySelectorAll("button[data-save-user-id]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const userId = Number(btn.dataset.saveUserId);
+      if (!Number.isFinite(userId)) return;
+
+      const roleInput = tbody.querySelector(`select[data-user-id='${userId}'][data-user-field='role']`);
+      const activeInput = tbody.querySelector(`input[data-user-id='${userId}'][data-user-field='is_active']`);
+      if (!roleInput || !activeInput) return;
+
+      btn.disabled = true;
+      try {
+        await api(`/v1/users/${userId}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            role: roleValueFromLabel(roleInput.value),
+            is_active: activeInput.checked,
+          }),
+        });
+        $("settingsStatus").textContent = "User updated";
+        await refreshUsers();
+      } catch (error) {
+        $("settingsStatus").textContent = `User update failed: ${error.message}`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+async function refreshUsers() {
+  try {
+    const users = await api("/v1/users");
+    renderUsersTable(Array.isArray(users) ? users : []);
+  } catch (error) {
+    $("settingsStatus").textContent = `Users load failed: ${error.message}`;
+  }
+}
+
+async function createUserFromSettings() {
+  const username = $("newUserUsername").value.trim();
+  const password = $("newUserPassword").value;
+  const role = roleValueFromLabel($("newUserRole").value);
+
+  if (!username || !password) {
+    $("settingsStatus").textContent = "Username and password are required";
+    return;
+  }
+
+  try {
+    await api("/v1/users", {
+      method: "POST",
+      body: JSON.stringify({
+        username,
+        password,
+        role,
+        is_active: true,
+        projects: [],
+      }),
+    });
+    $("newUserPassword").value = "";
+    $("settingsStatus").textContent = `User '${username}' created`;
+    await refreshUsers();
+  } catch (error) {
+    $("settingsStatus").textContent = `User create failed: ${error.message}`;
+  }
+}
+
+async function fetchProviderModels(provider, baseUrl, apiToken = "") {
+  const query = new URLSearchParams();
+  if (baseUrl) query.set("base_url", baseUrl);
+  if (apiToken) query.set("api_token", apiToken);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const payload = await api(`/v1/admin/config/meta/providers/${encodeURIComponent(provider)}/models${suffix}`);
+  return Array.isArray(payload.models) ? payload.models : [];
+}
+
+async function syncProviderModels(
+  providerSelectId,
+  baseUrlInputId,
+  tokenInputId,
+  modelSelectId,
+  modelSettingKey,
+  statusPrefix,
+) {
+  const provider = $(providerSelectId).value;
+  const baseUrl = $(baseUrlInputId).value.trim();
+  const tokenDraft = $(tokenInputId).value.trim();
+  const modelSelect = $(modelSelectId);
+  const preferred = modelSelect.value || state.settings[modelSettingKey] || "";
+
+  try {
+    const models = await fetchProviderModels(provider, baseUrl, tokenDraft);
+    renderModelSelectOptions(modelSelect, models);
+
+    if (!models.length) {
+      state.settings[modelSettingKey] = "";
+      $("settingsStatus").textContent = `${statusPrefix}: provider returned no models`;
+      updateLlmSaveButtonsState();
+      return;
+    }
+
+    if (preferred && models.includes(preferred)) {
+      modelSelect.value = preferred;
+      state.settings[modelSettingKey] = preferred;
+      $("settingsStatus").textContent = `${statusPrefix}: ${models.length} model(s) loaded`;
+      updateLlmSaveButtonsState();
+      return;
+    }
+
+    const firstModel = models[0];
+    modelSelect.value = firstModel;
+    state.settings[modelSettingKey] = firstModel;
+
+    if (preferred) {
+      $("settingsStatus").textContent = `${statusPrefix}: saved model '${preferred}' is unavailable, switched to '${firstModel}'`;
+    } else {
+      $("settingsStatus").textContent = `${statusPrefix}: ${models.length} model(s) loaded, selected '${firstModel}'`;
+    }
+    updateLlmSaveButtonsState();
+  } catch (error) {
+    state.settings[modelSettingKey] = "";
+    renderModelSelectOptions(modelSelect, []);
+    $("settingsStatus").textContent = `${statusPrefix} load failed: ${error.message}`;
+    updateLlmSaveButtonsState();
+  }
+}
+
+async function syncOptimizerModels() {
+  await syncProviderModels(
+    "optimizerProvider",
+    "optimizerBaseUrl",
+    "optimizerApiToken",
+    "optimizerModel",
+    "OPTIMIZER_MODEL",
+    "Optimizer models",
+  );
+}
+
+async function syncCompressionModels() {
+  await syncProviderModels(
+    "compressionProvider",
+    "compressionBaseUrl",
+    "compressionApiToken",
+    "compressionModel",
+    "PROMPT_COMPRESSION_MODEL",
+    "Compression models",
+  );
+}
+
+async function syncTestLlmModels() {
+  await syncProviderModels(
+    "testLlmProvider",
+    "testLlmBaseUrl",
+    "testLlmApiToken",
+    "testLlmModel",
+    "TEST_LLM_MODEL",
+    "Test LLM models",
+  );
+}
+
+function renderOptimizerSettings() {
+  const optimizerProvider = state.settings.OPTIMIZER_PROVIDER || "openai";
+  const optimizerBaseUrl = state.settings.OPTIMIZER_BASE_URL || getDefaultProviderBaseUrl(optimizerProvider);
+  const optimizerBackend = state.settings.OPTIMIZER_BACKEND || "leo";
+
+  const compressionProvider = state.settings.PROMPT_COMPRESSION_PROVIDER || optimizerProvider;
+  const compressionBaseUrl = state.settings.PROMPT_COMPRESSION_BASE_URL || getDefaultProviderBaseUrl(compressionProvider);
+  const compressionBackend = state.settings.PROMPT_COMPRESSION_BACKEND || optimizerBackend;
+
+  const testProvider = state.settings.TEST_LLM_PROVIDER || "ollama";
+  const testBaseUrl = state.settings.TEST_LLM_BASE_URL || getDefaultProviderBaseUrl(testProvider) || "http://127.0.0.1:11434";
+  const testTimeout = Number(state.settings.TEST_LLM_TIMEOUT_SECONDS || 45);
+  const testFallback = String(state.settings.TEST_LLM_USE_OPTIMIZER_FALLBACK || "false").toLowerCase() === "true";
+  const testRagEnabled = String(state.settings.TEST_RAG_ENABLED || "false").toLowerCase() === "true";
+  const testRagTopK = Number(state.settings.TEST_RAG_TOP_K || 3);
+  const testRagSourcePath = state.settings.TEST_RAG_SOURCE_PATH || "simulations/rag_knowledge.md";
+
+  renderProviderSelectOptions($("optimizerProvider"), optimizerProvider);
+  renderBackendSelectOptions($("optimizerBackend"), optimizerBackend);
+  $("optimizerBaseUrl").value = optimizerBaseUrl;
+  $("optimizerApiToken").value = "";
+  $("optimizerApiToken").placeholder = TOKEN_PLACEHOLDER;
+
+  renderProviderSelectOptions($("compressionProvider"), compressionProvider);
+  renderBackendSelectOptions($("compressionBackend"), compressionBackend);
+  $("compressionBaseUrl").value = compressionBaseUrl;
+  $("compressionApiToken").value = "";
+  $("compressionApiToken").placeholder = TOKEN_PLACEHOLDER;
+
+  renderProviderSelectOptions($("testLlmProvider"), testProvider);
+  $("testLlmBaseUrl").value = testBaseUrl;
+  $("testLlmTimeoutSeconds").value = Number.isFinite(testTimeout) ? String(Math.max(3, testTimeout)) : "45";
+  $("testLlmUseOptimizerFallback").value = testFallback ? "true" : "false";
+  $("testLlmApiToken").value = "";
+  $("testLlmApiToken").placeholder = TOKEN_PLACEHOLDER;
+  $("testRagEnabled").value = testRagEnabled ? "true" : "false";
+  $("testRagTopK").value = Number.isFinite(testRagTopK) ? String(Math.max(1, testRagTopK)) : "3";
+  $("testRagSourcePath").value = testRagSourcePath;
+
+  const autoProvider = state.settings.TEST_LLM_PROVIDER || state.settings.OPTIMIZER_PROVIDER || "ollama";
+  renderProviderSelectOptions($("llmAutoProvider"), autoProvider);
+  $("llmAutoBaseUrl").value = state.settings.TEST_LLM_BASE_URL || getDefaultProviderBaseUrl(autoProvider) || "";
+  if (!$("llmAutoMode").value) {
+    $("llmAutoMode").value = "intelligent";
+  }
+}
+
+async function saveOptimizerSettings() {
+  const provider = $("optimizerProvider").value;
+  const model = $("optimizerModel").value;
+  const baseUrl = $("optimizerBaseUrl").value.trim();
+  const backend = $("optimizerBackend").value;
+  const apiToken = $("optimizerApiToken").value.trim();
+
+  if (!model) {
+    $("settingsStatus").textContent = "Optimizer model is not selected. Reload models first.";
+    return;
+  }
+
+  await saveSetting("OPTIMIZER_PROVIDER", provider);
+  await saveSetting("OPTIMIZER_MODEL", model);
+  await saveSetting("OPTIMIZER_BASE_URL", baseUrl);
+  await saveSetting("OPTIMIZER_BACKEND", backend);
+  if (apiToken) {
+    await saveSetting("OPTIMIZER_API_TOKEN", apiToken);
+    $("optimizerApiToken").value = "";
+  }
+
+  await loadSettings();
+}
+
+async function saveCompressionSettings() {
+  const provider = $("compressionProvider").value;
+  const model = $("compressionModel").value;
+  const baseUrl = $("compressionBaseUrl").value.trim();
+  const backend = $("compressionBackend").value;
+  const apiToken = $("compressionApiToken").value.trim();
+
+  if (!model) {
+    $("settingsStatus").textContent = "Compression model is not selected. Reload models first.";
+    return;
+  }
+
+  await saveSetting("PROMPT_COMPRESSION_PROVIDER", provider);
+  await saveSetting("PROMPT_COMPRESSION_MODEL", model);
+  await saveSetting("PROMPT_COMPRESSION_BASE_URL", baseUrl);
+  await saveSetting("PROMPT_COMPRESSION_BACKEND", backend);
+  if (apiToken) {
+    await saveSetting("PROMPT_COMPRESSION_API_TOKEN", apiToken);
+    $("compressionApiToken").value = "";
+  }
+
+  await loadSettings();
+}
+
+async function saveTestLlmSettings() {
+  const provider = $("testLlmProvider").value;
+  const model = $("testLlmModel").value;
+  const baseUrl = $("testLlmBaseUrl").value.trim();
+  const timeoutSeconds = String(Math.max(3, Number($("testLlmTimeoutSeconds").value || 45)));
+  const useFallback = $("testLlmUseOptimizerFallback").value;
+  const apiToken = $("testLlmApiToken").value.trim();
+  const ragEnabled = $("testRagEnabled").value;
+  const ragTopK = String(Math.max(1, Number($("testRagTopK").value || 3)));
+  const ragSourcePath = $("testRagSourcePath").value.trim() || "simulations/rag_knowledge.md";
+
+  if (!model) {
+    $("settingsStatus").textContent = "Test LLM model is not selected. Reload test models first.";
+    return;
+  }
+
+  await saveSetting("TEST_LLM_PROVIDER", provider);
+  await saveSetting("TEST_LLM_MODEL", model);
+  await saveSetting("TEST_LLM_BASE_URL", baseUrl);
+  await saveSetting("TEST_LLM_TIMEOUT_SECONDS", timeoutSeconds);
+  await saveSetting("TEST_LLM_USE_OPTIMIZER_FALLBACK", useFallback);
+  if (apiToken) {
+    await saveSetting("TEST_LLM_API_TOKEN", apiToken);
+    $("testLlmApiToken").value = "";
+  }
+  await saveSetting("TEST_RAG_ENABLED", ragEnabled);
+  await saveSetting("TEST_RAG_TOP_K", ragTopK);
+  await saveSetting("TEST_RAG_SOURCE_PATH", ragSourcePath);
+
+  await loadSettings();
+}
+
+function buildLlmAutoPayload() {
+  return {
+    provider: $("llmAutoProvider").value,
+    strategy: $("llmAutoMode").value,
+    base_url: $("llmAutoBaseUrl").value.trim() || null,
+    api_token: $("llmAutoApiToken").value.trim() || null,
+    preferred_model: $("llmAutoPreferredModel").value.trim() || null,
+  };
+}
+
+async function previewLlmAutoSetup() {
+  try {
+    const result = await api("/v1/admin/config/llm/autoconfigure/preview", {
+      method: "POST",
+      body: JSON.stringify(buildLlmAutoPayload()),
+    });
+    $("llmAutoResult").textContent = JSON.stringify(result, null, 2);
+    $("settingsStatus").textContent = "LLM auto setup preview ready";
+  } catch (error) {
+    $("llmAutoResult").textContent = String(error.message || error);
+    $("settingsStatus").textContent = `LLM auto setup preview failed: ${error.message}`;
+  }
+}
+
+async function applyLlmAutoSetup() {
+  try {
+    const result = await api("/v1/admin/config/llm/autoconfigure/apply", {
+      method: "POST",
+      body: JSON.stringify(buildLlmAutoPayload()),
+    });
+    $("llmAutoResult").textContent = JSON.stringify(result, null, 2);
+    $("settingsStatus").textContent = "LLM auto setup applied";
+    $("llmAutoApiToken").value = "";
+    await loadSettings();
+  } catch (error) {
+    $("llmAutoResult").textContent = String(error.message || error);
+    $("settingsStatus").textContent = `LLM auto setup apply failed: ${error.message}`;
+  }
+}
+
+async function login(endpoint) {
+  const username = $("menuUsername").value.trim();
+  const password = $("menuPassword").value;
+  if (!username || !password) {
+    $("authMenuStatus").textContent = "Username and password are required";
+    return;
+  }
+
+  try {
+    const payload = await api(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+      headers: {},
+    });
+    state.accessToken = payload.access_token;
+    state.refreshToken = payload.refresh_token;
+    state.currentUser = payload.user;
+    localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, state.accessToken);
+    localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, state.refreshToken);
+    $("authMenuStatus").textContent = "Authenticated";
+    renderAuth();
+    toggleStatusMenu(false);
+    await refreshThreads();
+    await refreshPromptChains();
+    if (state.currentUser?.role === "admin") {
+      await loadSettings();
+    }
+  } catch (error) {
+    $("authMenuStatus").textContent = `Auth failed: ${error.message}`;
+  }
+}
+
+async function changePassword() {
+  const currentPassword = $("pwdCurrent").value;
+  const newPassword = $("pwdNew").value;
+  if (!currentPassword || !newPassword) {
+    $("changePasswordStatus").textContent = "Current and new passwords are required";
+    return;
+  }
+
+  try {
+    await api("/v1/auth/me/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    $("changePasswordStatus").textContent = "Password changed successfully";
+    $("pwdCurrent").value = "";
+    $("pwdNew").value = "";
+  } catch (error) {
+    $("changePasswordStatus").textContent = `Password change failed: ${error.message}`;
+  }
+}
+
+async function refreshThreads() {
+  if (!state.accessToken) return;
+  const project = $("threadFilterProject").value.trim();
+  const query = project ? `?project=${encodeURIComponent(project)}` : "";
+  try {
+    const items = await api(`/v1/conversations/threads${query}`);
+    renderThreads(items);
+  } catch (error) {
+    $("threadCreateStatus").textContent = `Thread load failed: ${error.message}`;
+  }
+}
+
+async function loadThreadDetails() {
+  if (!state.selectedThreadId) return;
+  const thread = await api(`/v1/conversations/threads/${state.selectedThreadId}`);
+  $("threadDetailsTitle").textContent = `Thread #${thread.id}: ${thread.title}`;
+  $("threadDetailsHint").textContent = `${thread.project} · ${thread.source}`;
+  renderThreadAnalysisPlaceholder();
+  renderThreadAnalysisLogPlaceholder();
+  const messages = await api(`/v1/conversations/threads/${state.selectedThreadId}/messages`);
+  state.threadMessages = messages;
+  state.threadAnalysisMessages = messages;
+  renderMessages(messages);
+  await refreshThreads();
+}
+
+async function createThread() {
+  try {
+    const payload = await api("/v1/conversations/threads", {
+      method: "POST",
+      body: JSON.stringify({
+        project: $("threadProject").value.trim(),
+        title: $("threadTitle").value.trim(),
+        source: $("threadSource").value.trim() || "manual",
+      }),
+    });
+    $("threadCreateStatus").textContent = `Created thread #${payload.id}`;
+    state.selectedThreadId = payload.id;
+    await refreshThreads();
+    await loadThreadDetails();
+    setActiveTab("panelThreads");
+  } catch (error) {
+    $("threadCreateStatus").textContent = `Create failed: ${error.message}`;
+  }
+}
+
+async function appendMessage() {
+  if (!state.selectedThreadId) {
+    $("threadCreateStatus").textContent = "Select a thread first";
+    return;
+  }
+  const role = $("newMessageRole").value;
+  const content = $("newMessageContent").value.trim();
+  if (!content) return;
+
+  try {
+    await api(`/v1/conversations/threads/${state.selectedThreadId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role, content }] }),
+    });
+    $("newMessageContent").value = "";
+    await loadThreadDetails();
+  } catch (error) {
+    $("threadCreateStatus").textContent = `Append failed: ${error.message}`;
+  }
+}
+
+async function importJson() {
+  try {
+    const raw = $("jsonPayload").value.trim();
+    const payload = JSON.parse(raw);
+    const result = await api("/v1/conversations/import/json", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    $("importStatus").textContent = `JSON import status: ${result.status}, thread #${result.thread_id}`;
+    await refreshThreads();
+  } catch (error) {
+    $("importStatus").textContent = `JSON import failed: ${error.message}`;
+  }
+}
+
+async function importText() {
+  try {
+    const payload = {
+      project: $("textProject").value.trim(),
+      title: $("textTitle").value.trim(),
+      delimiter: $("textDelimiter").value,
+      text: $("textPayload").value,
+    };
+    const result = await api("/v1/conversations/import/text", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    $("importStatus").textContent = `Text import status: ${result.status}, thread #${result.thread_id}`;
+    await refreshThreads();
+  } catch (error) {
+    $("importStatus").textContent = `Text import failed: ${error.message}`;
+  }
+}
+
+async function analyzeThread() {
+  if (!state.selectedThreadId) return;
+  try {
+    const result = await api(`/v1/conversations/analyze/${state.selectedThreadId}`, { method: "POST" });
+    if (!state.threadMessages.length) {
+      state.threadMessages = await api(`/v1/conversations/threads/${state.selectedThreadId}/messages`);
+      renderMessages(state.threadMessages);
+    }
+    state.threadAnalysisMessages = state.threadMessages;
+    state.threadAnalysisReport = result;
+    renderThreadAnalysis(result, state.threadAnalysisMessages);
+    await loadThreadAnalysisLog();
+  } catch (error) {
+    $("analyzeOutput").innerHTML = `<p class="analysis-placeholder">Analyze failed: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function buildThreadReportFromMessages(threadId, messages) {
+  const counters = { user: 0, assistant: 0, system: 0, tool: 0 };
+  let totalChars = 0;
+  let startedAt = null;
+  let endedAt = null;
+
+  for (const msg of messages) {
+    const role = String(msg.role || "").trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(counters, role)) {
+      counters[role] += 1;
+    }
+    const content = String(msg.content || "");
+    totalChars += content.length;
+
+    const dt = msg.timestamp ? new Date(msg.timestamp) : null;
+    if (dt && Number.isFinite(dt.getTime())) {
+      if (!startedAt || dt < startedAt) startedAt = dt;
+      if (!endedAt || dt > endedAt) endedAt = dt;
+    }
+  }
+
+  return {
+    thread_id: Number(threadId || 0),
+    turns: messages.length,
+    user_turns: counters.user,
+    assistant_turns: counters.assistant,
+    system_turns: counters.system,
+    tool_turns: counters.tool,
+    total_chars: totalChars,
+    started_at: startedAt ? startedAt.toISOString() : null,
+    ended_at: endedAt ? endedAt.toISOString() : null,
+  };
+}
+
+function buildPromptOrchestratorRecommendations(content) {
+  const metrics = computeSecurityMetrics(content);
+  const recommendations = [];
+  if (Number(metrics.injection_risk || 0) >= 20) {
+    recommendations.push("Harden instruction hierarchy and remove conflicting directives.");
+  }
+  if (Number(metrics.contradiction_risk || 0) >= 10) {
+    recommendations.push("Resolve contradictory constraints and make precedence explicit.");
+  }
+  if (Number(metrics.ambiguity_risk || 0) >= 10) {
+    recommendations.push("Replace vague phrasing with concrete thresholds and expected outputs.");
+  }
+  if (!recommendations.length) {
+    recommendations.push("Prompt is stable; preserve structure and trim redundant text.");
+  }
+  return { metrics, recommendations };
+}
+
+function orchestratePromptText(content) {
+  const source = String(content || "").trim();
+  const { recommendations } = buildPromptOrchestratorRecommendations(source);
+  const improved = [
+    "You are a prompt orchestration assistant.",
+    "Keep instruction hierarchy explicit: system > task > constraints > examples > context.",
+    "Return concise, structured output and avoid unsupported claims.",
+    "",
+    "Source prompt:",
+    source,
+    "",
+    "Suggested improvements:",
+    ...recommendations.map((item) => `- ${item}`),
+  ].join("\n");
+  return { improved_prompt: improved, recommendations };
+}
+
+async function orchestrateAndAnalyzeThreadChain() {
+  if (!state.selectedThreadId) {
+    $("analyzeOutput").innerHTML = '<p class="analysis-placeholder">Select a thread first.</p>';
+    return;
+  }
+
+  try {
+    if (!state.threadMessages.length) {
+      state.threadMessages = await api(`/v1/conversations/threads/${state.selectedThreadId}/messages`);
+      renderMessages(state.threadMessages);
+    }
+
+    const improvedMessages = state.threadMessages.map((msg, index) => {
+      const sourceContent = String(msg.content || "");
+      const orchestrated = orchestratePromptText(sourceContent);
+      return {
+        ...msg,
+        seq_no: Number(msg.seq_no || index + 1),
+        content: orchestrated.improved_prompt,
+        _orchestrator_recommendations: orchestrated.recommendations,
+        _original_content: sourceContent,
+      };
+    });
+
+    state.threadAnalysisMessages = improvedMessages;
+    const syntheticReport = buildThreadReportFromMessages(state.selectedThreadId, improvedMessages);
+    state.threadAnalysisReport = syntheticReport;
+    renderThreadAnalysis(syntheticReport, improvedMessages);
+
+    const logRows = improvedMessages
+      .map((msg) => {
+        const seqNo = Number(msg.seq_no || 0);
+        const rec = Array.isArray(msg._orchestrator_recommendations) ? msg._orchestrator_recommendations : [];
+        const original = String(msg._original_content || "");
+        const improved = String(msg.content || "");
+        return [
+          `[${seqNo}] role=${msg.role}`,
+          "Original:",
+          original,
+          "",
+          "Recommendations:",
+          ...(rec.length ? rec.map((item) => `- ${item}`) : ["- (none)"]),
+          "",
+          "Improved:",
+          improved,
+          "",
+        ].join("\n");
+      })
+      .join("\n------------------------------\n\n");
+
+    $("threadAnalysisLog").innerHTML = `
+      <div class="analysis-card">
+        <p class="analysis-label">Prompt Orchestrator pass</p>
+        <p class="analysis-value-small">Improved messages: ${improvedMessages.length}</p>
       </div>
-
-      <p v-if="browseTotalItems===0" style="color:var(--muted)">No prompts found.</p>
-
-      <div class="prompt-list">
-        <div class="prompt-card" v-for="p in paginatedItems" :key="key(p)">
-
-          <div class="prompt-header" @click="togglePrompt(p)">
-            <div class="prompt-header-main">
-              <h3>{{ p.project }} / {{ p.name }}</h3>
-            </div>
-            <div class="chips prompt-header-chips">
-              <span class="chip" v-for="t in visibleHeaderTags(p.tags)" :key="t">{{ t }}</span>
-              <span class="chip chip-overflow" v-if="hiddenHeaderTagCount(p.tags) > 0">+{{ hiddenHeaderTagCount(p.tags) }}</span>
-            </div>
-            <div class="prompt-header-meta prompt-header-meta-inline">{{ formatAuditLine('Updated', p.updated_at, p.updated_by_username) }}</div>
-            <span class="ver-badge">v{{ p.latest_version }}</span>
-            <span class="expand-icon" :class="{open: expandedKey===key(p)}">&#9660;</span>
-          </div>
-
-          <div class="prompt-detail" v-if="expandedKey===key(p)">
-            <div class="audit-block">
-              <div class="audit-line">{{ formatAuditLine('Created', p.created_at, p.created_by_username) }}</div>
-              <div class="audit-line">{{ formatAuditLine('Updated', p.updated_at, p.updated_by_username) }}</div>
-            </div>
-
-            <!-- Tags -->
-            <div class="detail-section">
-              <h4>Tags</h4>
-              <div v-if="!editTagsMode || !canWrite">
-                <div class="chips">
-                  <span class="chip" v-for="t in p.tags" :key="t">{{ t }}</span>
-                  <em v-if="p.tags.length===0" style="color:var(--muted);font-size:0.85rem">none</em>
-                </div>
-                <div class="btn-row" v-if="canWrite">
-                  <button class="ghost" @click="editTagsMode=true; editTagsStr=p.tags.join(', ')">Edit tags</button>
-                </div>
-              </div>
-              <div v-else>
-                <div class="field">
-                  <label>Tags (comma-separated)</label>
-                  <input v-model="editTagsStr" placeholder="alpha, beta, prod" />
-                </div>
-                <div class="btn-row">
-                  <button @click="saveTags(p)">Save tags</button>
-                  <button class="ghost" @click="editTagsMode=false">Cancel</button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Latest content rendered as markdown -->
-            <div class="detail-section">
-              <h4>Latest content &mdash; v{{ p.latest_version }}</h4>
-              <div class="md-content" v-html="md(buildPromptMarkdown(p))"></div>
-              <div class="btn-row" style="margin-top:12px" v-if="canWrite">
-                <button class="secondary" @click.stop="optimizeFromBrowse(p)">Optimize Prompt</button>
-                <button class="danger" @click.stop="deletePrompt(p)">Delete Prompt</button>
-              </div>
-              <p v-if="isViewer" style="margin-top:12px;color:var(--muted)">Viewer role can inspect prompts but cannot optimize, edit, or delete them.</p>
-              <p v-if="deleteStatus" :class="deleteStatus.includes('failed') ? 'status-err' : 'status-ok'">{{ deleteStatus }}</p>
-            </div>
-
-            <!-- New version editor -->
-            <div class="detail-section" v-if="canWrite">
-              <div class="section-title-row">
-                <h4 style="margin:0">Create new version</h4>
-                <button class="ghost" @click="newVersionEditorOpen = !newVersionEditorOpen">
-                  {{ newVersionEditorOpen ? 'Hide' : 'Show' }}
-                </button>
-              </div>
-              <div class="new-version-editor" v-if="newVersionEditorOpen">
-                <div class="new-version-group">
-                  <p class="new-version-group-title">Prompt components</p>
-                  <div class="field">
-                    <label>Role (optional)</label>
-                    <input v-model="newVersionRole" placeholder="You are a helpful assistant..." />
-                  </div>
-                  <div class="field">
-                    <label>Task (required)</label>
-                    <textarea v-model="newVersionTask" style="min-height:160px" placeholder="Generate a summary of..."></textarea>
-                  </div>
-                  <div class="field">
-                    <label>Constraints (optional)</label>
-                    <textarea v-model="newVersionConstraints" style="min-height:80px" placeholder="Limitations, rules, format restrictions..."></textarea>
-                  </div>
-                  <div class="field">
-                    <label>Output Format (optional)</label>
-                    <textarea v-model="newVersionOutputFormat" style="min-height:80px" placeholder="JSON, CSV, markdown, bullet points..."></textarea>
-                  </div>
-                  <div class="field">
-                    <label>Examples (optional)</label>
-                    <textarea v-model="newVersionExamples" style="min-height:80px" placeholder="Input/output examples..."></textarea>
-                  </div>
-                  <div class="field">
-                    <label>Context (optional)</label>
-                    <textarea v-model="newVersionContext" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
-                  </div>
-                </div>
-                <div class="new-version-group">
-                  <p class="new-version-group-title">Composed preview</p>
-                  <div class="field">
-                    <div class="md-editor-preview-label">Preview</div>
-                    <div class="md-editor-preview" :class="{empty: !newVersionTask}" v-html="newVersionTask ? md(buildPromptMarkdown({role: newVersionRole, task: newVersionTask, constraints: newVersionConstraints, output_format: newVersionOutputFormat, examples: newVersionExamples, context: newVersionContext})) : 'Nothing to preview yet\u2026'"></div>
-                  </div>
-                </div>
-              </div>
-              <div class="btn-row">
-                <button v-if="newVersionEditorOpen" @click="saveNewVersion(p)">Save as new version</button>
-              </div>
-              <p v-if="saveStatus" :class="saveStatus.includes('failed') ? 'status-err' : 'status-ok'">{{ saveStatus }}</p>
-            </div>
-
-            <!-- Version history -->
-            <div class="detail-section">
-              <h4>Version history ({{ expandedVersions.length }})</h4>
-              <div class="version-list">
-                <div class="version-item" v-for="v in expandedVersions.slice().reverse()" :key="v.version">
-                  <div class="version-item-header" @click="openVersionKey = (openVersionKey===v.version ? null : v.version)">
-                    <span>Version {{ v.version }}</span>
-                    <span class="version-audit">{{ formatUtcDateTime(v.created_at) }}<template v-if="v.created_by_username"> by {{ v.created_by_username }}</template></span>
-                    <span style="font-size:0.75rem;color:var(--muted)">{{ openVersionKey===v.version ? 'hide' : 'show' }}</span>
-                  </div>
-                  <div class="version-item-body" v-if="openVersionKey===v.version">
-                    <div class="md-content" v-html="md(buildPromptMarkdown(v))"></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-          </div>
-        </div>
+      <div class="table-wrap">
+        <pre class="log-output">${escapeHtml(logRows)}</pre>
       </div>
+    `;
+  } catch (error) {
+    $("analyzeOutput").innerHTML = `<p class="analysis-placeholder">Orchestrate + analyze failed: ${escapeHtml(error.message)}</p>`;
+  }
+}
 
-      <div class="browse-pagination" v-if="browseTotalItems > browsePageSize">
-        <button class="ghost" :disabled="browsePage===1" @click="setBrowsePage(browsePage - 1)">Previous</button>
-        <span class="browse-page-indicator">Page {{ browsePage }} of {{ totalBrowsePages }}</span>
-        <button class="ghost" :disabled="browsePage===totalBrowsePages" @click="setBrowsePage(browsePage + 1)">Next</button>
-      </div>
-    </div>
+async function loadThreadAnalysisLog() {
+  if (!state.selectedThreadId) return;
+  try {
+    const result = await api(`/v1/conversations/threads/${state.selectedThreadId}/analysis-log`);
+    renderThreadAnalysisLog(result);
+  } catch (error) {
+    $("threadAnalysisLog").innerHTML = `<p class="analysis-placeholder">Full log failed: ${escapeHtml(error.message)}</p>`;
+  }
+}
 
-    <!-- CREATE TAB -->
-    <div class="tab-panel" v-if="activeTab==='create' && canWrite">
-      <h2 style="margin-top:0">New Prompt</h2>
-      <div v-if="!availableProjectNames.length" style="padding:12px;background:rgba(185,28,28,0.1);border:1px solid rgba(185,28,28,0.3);border-radius:10px;color:var(--err)">
-        No projects available. Admin must create projects in the Admin tab first.
-      </div>
-      <template v-else>
-        <div class="create-grid">
-          <div class="field">
-            <label>Name (required)</label>
-            <input v-model="form.name" placeholder="checkout-system" required />
-          </div>
-          <div class="field">
-            <label>Project (required)</label>
-            <select class="select-pretty" v-model="form.project" required>
-              <option value="">Select a project</option>
-              <option v-for="projectName in availableProjectNames" :key="projectName" :value="projectName">{{ projectName }}</option>
-            </select>
-          </div>
-        </div>
-        <div class="field">
-          <label>Tags (comma-separated, optional)</label>
-          <input v-model="form.tags" placeholder="system, production, v1" />
-        </div>
-        <fieldset class="group-box">
-          <legend>Prompt Data</legend>
-          <div class="field">
-            <label>Role (optional)</label>
-            <input v-model="form.role" placeholder="You are a helpful assistant..." />
-          </div>
-          <div class="field">
-            <label>Task (required)</label>
-            <textarea v-model="form.task" style="min-height:160px" placeholder="Generate a summary of..."></textarea>
-          </div>
-          <div class="field">
-            <label>Constraints (optional)</label>
-            <textarea v-model="form.constraints" style="min-height:80px" placeholder="Limitations, rules, format restrictions..."></textarea>
-          </div>
-          <div class="field">
-            <label>Output format (optional)</label>
-            <textarea v-model="form.output_format" style="min-height:80px" placeholder="JSON, CSV, markdown, bullet points..."></textarea>
-          </div>
-          <div class="field">
-            <label>Examples (optional)</label>
-            <textarea v-model="form.examples" style="min-height:80px" placeholder="Input/output examples..."></textarea>
-          </div>
-          <div class="field">
-            <label>Context (optional)</label>
-            <textarea v-model="form.context" style="min-height:160px" placeholder="Background information, data format, target audience..."></textarea>
-          </div>
-        </fieldset>
-        <div class="field">
-          <div class="md-editor-preview-label">Preview</div>
-          <div class="md-editor-preview" :class="{empty: !form.task}" v-html="form.task ? md(buildPromptMarkdown(form)) : 'Nothing to preview yet\u2026'"></div>
-        </div>
-        <div class="btn-row">
-          <button class="secondary" @click.stop="optimizeFromCreate">Optimize Prompt</button>
-          <button @click="createPrompt" :disabled="!form.project">Save Prompt</button>
-        </div>
-        <p v-if="createStatus" :class="createStatus.includes('failed') ? 'status-err' : 'status-ok'">{{ createStatus }}</p>
-      </template>
-    </div>
+async function exportElementToPdf(element, fileName, titleText) {
+  const html2canvasLib = window.html2canvas;
+  const jsPdfCtor = window.jspdf?.jsPDF;
 
-    <!-- CONFIG TAB -->
-    <div class="tab-panel" v-if="activeTab==='config'">
-      <h2 style="margin-top:0">Optimization Config</h2>
-      <p style="margin:0 0 12px;color:var(--muted)">Manage active settings for the configured optimizer backend. These settings are stored per user.</p>
-      <p style="margin:0 0 12px;color:var(--muted)">Leo uses a 10-step prompt-engineering system prompt submitted to an LLM — a provider must be configured. Without a provider the service falls back to the built-in heuristic engine.</p>
-      <p v-if="isViewer" style="margin:0 0 12px;color:var(--muted)">Viewer role is read-only. Configuration values are visible but cannot be changed.</p>
+  if (!html2canvasLib || !jsPdfCtor) {
+    const exportWindow = window.open("", "_blank", "noopener,noreferrer,width=1200,height=900");
+    if (!exportWindow) {
+      throw new Error("Popup blocked: allow popups to export PDF");
+    }
+    exportWindow.document.write(`
+      <html>
+        <head><title>${escapeHtml(titleText)}</title><style>body{font-family:Arial,sans-serif;padding:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d1d5db;padding:6px;text-align:left}.trend-chart,.analysis-report,.table-wrap{overflow:visible !important}</style></head>
+        <body>
+          <h1>${escapeHtml(titleText)}</h1>
+          ${element.outerHTML}
+        </body>
+      </html>
+    `);
+    exportWindow.document.close();
+    exportWindow.focus();
+    exportWindow.print();
+    return;
+  }
 
-      <div class="opt-config-box opt-config-box-standalone">
-        <div class="opt-settings-group">
-          <h5>LLM Provider Settings (required for Leo optimization)</h5>
-          <div class="opt-settings-toolbar">
-            <button
-              class="ghost opt-refresh-btn"
-              @click="loadAvailableLlmModels(optimizeConfig.llm_provider)"
-              :disabled="llmModelsLoading || !canWrite"
-              title="Refresh available models for current API key"
-            >
-              {{ llmModelsLoading ? "Loading..." : "Refresh Models" }}
-            </button>
-          </div>
-          <div class="create-grid">
-            <div class="field">
-              <label>Provider</label>
-              <select class="select-pretty" v-model="optimizeConfig.llm_provider" :disabled="!canWrite" @change="updateProviderBaseUrl(optimizeConfig.llm_provider); loadAvailableLlmModels(optimizeConfig.llm_provider, false)">
-                <option v-for="provider in llmProviderOptions" :key="provider" :value="provider">{{ getProviderLabel(provider) }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Model</label>
-              <select class="select-pretty" v-model="optimizeConfig.llm_model" :disabled="llmModelsLoading || !canWrite">
-                <option v-for="m in availableLlmModels" :key="m" :value="m">{{ m }}</option>
-              </select>
-            </div>
-          </div>
-          <div class="create-grid">
-            <div class="field">
-              <label>Base URL</label>
-              <input v-model="optimizeConfig.llm_base_url" :disabled="!canWrite" @change="loadAvailableLlmModels(optimizeConfig.llm_provider)" placeholder="http://127.0.0.1:11434" />
-            </div>
-            <div class="field" v-if="modelRequiresToken()" style="max-width:220px">
-              <label>API Token</label>
-              <input type="password" v-model="optimizeConfig.llm_api_token" :disabled="!canWrite" :placeholder="optimizeConfig.effective_has_llm_api_token ? 'Token already set' : 'Enter your API token'" />
-              <p v-if="optimizeConfig.effective_has_llm_api_token" style="margin:4px 0 0;color:var(--muted);font-size:0.82rem">✓ Token is configured</p>
-            </div>
-            <div class="field" v-else style="max-width:220px">
-              <label>Timeout (seconds)</label>
-              <input type="number" min="5" v-model.number="optimizeConfig.llm_timeout_seconds" :disabled="!canWrite" />
-            </div>
-          </div>
-          <div class="create-grid" v-if="modelRequiresToken()">
-            <div class="field" style="max-width:220px">
-              <label>Timeout (seconds)</label>
-              <input type="number" min="5" v-model.number="optimizeConfig.llm_timeout_seconds" :disabled="!canWrite" />
-            </div>
-          </div>
-          <p v-if="llmModelsLoading" style="margin:4px 0 0;color:var(--muted);font-size:0.84rem">Loading available models...</p>
-          <p v-if="llmModelsLoadError" style="margin:4px 0 0;color:var(--muted);font-size:0.84rem">{{ llmModelsLoadError }}</p>
-        </div>
+  const canvas = await html2canvasLib(element, {
+    scale: 2,
+    backgroundColor: "#ffffff",
+    useCORS: true,
+    logging: false,
+  });
 
-        <div class="btn-row" style="margin-top:12px" v-if="canWrite">
-          <button class="secondary" @click="saveOptimizeConfig">Save Config</button>
-        </div>
-        <p v-if="optimizeConfigStatus" :class="optimizeConfigStatus.includes('Failed') ? 'status-err' : 'status-ok'">{{ optimizeConfigStatus }}</p>
-        <p style="margin:6px 0 0;color:var(--muted);font-size:0.84rem">
-          Active model: {{ optimizeConfig.effective_llm_model }} | Active provider: {{ optimizeConfig.effective_llm_provider }} | Timeout: {{ optimizeConfig.effective_llm_timeout_seconds }}s
-        </p>
-      </div>
+  const imageData = canvas.toDataURL("image/png");
+  const pdf = new jsPdfCtor("p", "pt", "a4");
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const margin = 24;
+  const contentWidth = pageWidth - margin * 2;
+  const contentHeight = (canvas.height * contentWidth) / canvas.width;
+  let yOffset = margin;
 
-      <div v-if="isAdmin" class="opt-config-box opt-config-box-standalone" style="margin-top:14px">
-        <div class="opt-settings-group">
-          <h5>Global Configuration (admin)</h5>
-          <p style="margin:0 0 10px;color:var(--muted);font-size:0.88rem">
-            These values are shared app-wide and stored in global_config.
-          </p>
-          <div class="btn-row" style="margin-bottom:10px">
-            <button class="ghost" @click="loadGlobalConfig" :disabled="globalConfigLoading">
-              {{ globalConfigLoading ? "Loading..." : "Refresh Global Config" }}
-            </button>
-          </div>
+  pdf.setFontSize(14);
+  pdf.text(titleText, margin, 16);
+  pdf.addImage(imageData, "PNG", margin, yOffset, contentWidth, contentHeight);
 
-          <p v-if="!globalConfigEntries.length && !globalConfigLoading" style="color:var(--muted)">
-            No global config entries returned.
-          </p>
+  let remaining = contentHeight - (pageHeight - margin * 2);
+  let sourceYOffset = pageHeight - margin * 2;
 
-          <div v-for="entry in globalConfigEntries" :key="entry.key" style="padding:10px 0;border-top:1px solid var(--line)">
-            <div class="field" style="margin-bottom:8px">
-              <label>{{ entry.key }}</label>
-              <select
-                v-if="getGlobalConfigControlType(entry) === 'select'"
-                class="select-pretty"
-                v-model="entry.draft"
-              >
-                <option v-for="optionValue in getGlobalConfigOptions(entry)" :key="optionValue" :value="optionValue">
-                  {{ entry.key === 'OPTIMIZER_PROVIDER' ? getProviderLabel(optionValue) : optionValue }}
-                </option>
-              </select>
-              <input
-                v-else-if="getGlobalConfigControlType(entry) === 'integer'"
-                type="number"
-                step="1"
-                v-model="entry.draft"
-              />
-              <label v-else-if="getGlobalConfigControlType(entry) === 'boolean'" class="gc-switch">
-                <input
-                  type="checkbox"
-                  :checked="String(entry.draft || '').toLowerCase() === 'true'"
-                  @change="setGlobalConfigBooleanDraft(entry, $event.target.checked)"
-                />
-                <span class="gc-switch-track"></span>
-                <span class="gc-switch-label">{{ String(entry.draft || '').toLowerCase() === 'true' ? 'Enabled' : 'Disabled' }}</span>
-              </label>
-              <input v-else v-model="entry.draft" />
-            </div>
-            <div class="btn-row">
-              <button class="secondary" @click="saveGlobalConfigEntry(entry)" :disabled="entry.saving || entry.draft === entry.value">
-                {{ entry.saving ? "Saving..." : "Save" }}
-              </button>
-              <button class="ghost" @click="resetGlobalConfigDraft(entry)" :disabled="entry.saving || entry.draft === entry.value">
-                Reset
-              </button>
-            </div>
-          </div>
+  while (remaining > 0) {
+    pdf.addPage();
+    pdf.addImage(imageData, "PNG", margin, margin - sourceYOffset, contentWidth, contentHeight);
+    remaining -= pageHeight - margin * 2;
+    sourceYOffset += pageHeight - margin * 2;
+  }
 
-          <p v-if="globalConfigStatus" :class="globalConfigStatus.includes('Failed') ? 'status-err' : 'status-ok'">
-            {{ globalConfigStatus }}
-          </p>
-        </div>
-      </div>
+  pdf.save(fileName);
+}
 
-      <div v-if="canViewAdmin" class="admin-panel">
-        <div class="admin-panel-header">
-          <div>
-            <h3>{{ isViewer ? 'Read-only admin data' : 'Admin tools moved' }}</h3>
-            <p>{{ isViewer ? 'Viewer can inspect projects, users, and roles in the Admin tab.' : 'Project and user management are now available in the dedicated Admin tab.' }}</p>
-          </div>
-          <button class="secondary" @click="activeTab='admin'">Open Admin</button>
-        </div>
-      </div>
-    </div>
+function buildPromptAnalysisExportNode() {
+  const wrapper = document.createElement("section");
+  wrapper.style.background = "#ffffff";
+  wrapper.style.padding = "14px";
+  wrapper.style.fontFamily = '"Space Grotesk", Arial, sans-serif';
+  wrapper.style.width = "1020px";
 
-    <div class="tab-panel" v-if="activeTab==='plugins'">
-      <div class="plugin-panel-header">
-        <div>
-          <h2 style="margin-top:0">Plugins</h2>
-          <p class="plugin-panel-subtitle">Each plugin appears in its own group box. Controls are rendered in the order requested by the plugin.</p>
-        </div>
-        <div class="btn-row">
-          <button class="ghost" @click="loadPlugins" :disabled="pluginsLoading">{{ pluginsLoading ? 'Loading...' : 'Refresh' }}</button>
-          <button v-if="isAdmin" class="secondary" @click="rescanPlugins" :disabled="pluginsLoading">Rescan</button>
-        </div>
-      </div>
+  const title = document.createElement("h2");
+  title.textContent = $("promptChainDetailsTitle").textContent || "Prompt chain analysis";
+  wrapper.appendChild(title);
 
-      <div class="plugin-filter-bar">
-        <div class="plugin-filter-bar-header">
-          <div class="field plugin-filter-field">
-            <label>Search by name</label>
-            <input v-model="pluginNameFilter" placeholder="example, modal, headless..." />
-          </div>
-          <button type="button" class="ghost plugin-filter-bar-toggle" @click="togglePluginFilterBar">
-            {{ pluginFilterBarOpen ? 'Hide filters' : 'Show filters' }}
-          </button>
-        </div>
-        <div v-if="pluginFilterBarOpen" class="plugin-filter-bar-body">
-          <div class="plugin-filter-tags">
-            <span class="plugin-filter-tags-label">Filter tags</span>
-            <div class="plugin-filter-tag-groups" v-if="pluginTagFilterGroups.length">
-              <div class="plugin-filter-tag-group" v-for="group in pluginTagFilterGroups" :key="group.key">
-                <div class="plugin-tag-group-title">{{ group.label }}</div>
-                <div class="chips plugin-filter-chip-list">
-                  <button
-                    v-for="tag in group.tags"
-                    :key="group.key + '-' + tag"
-                    type="button"
-                    class="chip plugin-filter-chip"
-                    :class="{ active: isPluginTagActive(tag) }"
-                    @click="togglePluginTagFilter(tag)"
-                  >
-                    {{ tag }}
-                  </button>
-                </div>
-              </div>
-            </div>
-            <p v-else class="plugin-filter-empty">No tags available yet.</p>
-          </div>
-          <div class="plugin-filter-mode">
-            <span class="plugin-filter-tags-label">Tag match</span>
-            <div class="plugin-match-switch" role="group" aria-label="Tag match mode">
-              <button type="button" class="chip plugin-match-chip" :class="{ active: pluginTagMatchMode === 'or' }" @click="setPluginTagMatchMode('or')">OR</button>
-              <button type="button" class="chip plugin-match-chip" :class="{ active: pluginTagMatchMode === 'and' }" @click="setPluginTagMatchMode('and')">AND</button>
-            </div>
-            <p class="plugin-filter-empty">OR matches any selected tag. AND requires all selected tags.</p>
-          </div>
-          <div class="btn-row plugin-filter-actions">
-            <button class="ghost" @click="clearPluginFilters" :disabled="!pluginNameFilter && !pluginTagFilters.length">Clear filters</button>
-          </div>
-        </div>
-      </div>
+  const hint = document.createElement("p");
+  hint.textContent = $("promptChainDetailsHint").textContent || "";
+  hint.style.color = "#64748b";
+  wrapper.appendChild(hint);
 
-      <p v-if="pluginsStatus" :class="pluginsStatus.includes('Failed') ? 'status-err' : 'status-ok'">{{ pluginsStatus }}</p>
-      <p v-if="!filteredPlugins.length && !pluginsLoading" style="color:var(--muted)">No plugins match the current filters.</p>
+  const appendBlock = (headingText, node) => {
+    const heading = document.createElement("h3");
+    heading.textContent = headingText;
+    wrapper.appendChild(heading);
+    wrapper.appendChild(node.cloneNode(true));
+  };
 
-      <div class="plugin-scroll-area" v-if="filteredPlugins.length">
-        <fieldset class="group-box plugin-group-box" v-for="plugin in filteredPlugins" :key="plugin.name">
-          <legend>{{ plugin.name }}</legend>
-          <div class="plugin-card-header">
-            <div class="plugin-card-title-row">
-              <img v-if="pluginHasImageIcon(plugin.icon)" :src="plugin.icon" :alt="plugin.name" class="plugin-card-icon" />
-              <div v-else class="plugin-card-icon plugin-card-icon-fallback">{{ pluginIconFallback(plugin) }}</div>
-              <div>
-                <div class="plugin-card-title">{{ plugin.name }} <span class="plugin-card-version">v{{ plugin.version }}</span></div>
-                <div class="plugin-card-description">{{ plugin.description }}</div>
-              </div>
-            </div>
-            <div class="chips plugin-state-chips">
-              <span class="chip">{{ plugin.state }}</span>
-              <span class="chip" v-if="plugin.available">available</span>
-              <span class="chip" v-if="plugin.signature_status === 'verified'">signed</span>
-              <span class="chip chip-warn" v-else-if="plugin.signature_status === 'unsigned'">unsigned</span>
-              <span class="chip chip-err" v-else-if="plugin.signature_status">signature invalid</span>
-              <span class="chip" v-if="!plugin.compatible">incompatible</span>
-              <span class="chip chip-warn" v-if="getPluginFailureCount(plugin.name) > 0">failures: {{ getPluginFailureCount(plugin.name) }}</span>
-              <span class="chip chip-err" v-if="getPluginBlockedCount(plugin.name) > 0">blocked: {{ getPluginBlockedCount(plugin.name) }}</span>
-            </div>
-          </div>
+  appendBlock("Summary", $("promptChainAnalysisSummary"));
+  appendBlock("Trend chart", $("promptChainTrendChart"));
+  appendBlock("Metrics table", $("promptChainMetricsTable"));
+  appendBlock("Selected version analysis", $("promptVersionAnalysis"));
 
-          <div class="plugin-card-meta">
-            <div><strong>Source:</strong> {{ plugin.source_path }}</div>
-            <div><strong>Routes:</strong> {{ plugin.active_routes.length }}</div>
-            <div><strong>Hooks:</strong> {{ plugin.hooks.length }}</div>
-            <div><strong>Health fails:</strong> {{ plugin.health_failures }}</div>
-            <div><strong>Signature:</strong> {{ plugin.signature_status }}<template v-if="plugin.signature_signer"> by {{ plugin.signature_signer }}</template></div>
-          </div>
+  return wrapper;
+}
 
-          <p v-if="plugin.unavailable_reason" class="status-err">{{ plugin.unavailable_reason }}</p>
-          <p v-if="plugin.last_error" class="status-err">{{ plugin.last_error }}</p>
-          <p v-if="plugin.signature_error" class="status-err">{{ plugin.signature_error }}</p>
+async function exportThreadAnalysisPdf() {
+  if (!state.selectedThreadId) {
+    $("threadCreateStatus").textContent = "Select a thread first";
+    return;
+  }
+  const section = document.createElement("section");
+  section.style.background = "#ffffff";
+  section.style.padding = "14px";
+  section.style.fontFamily = '"Space Grotesk", Arial, sans-serif';
+  section.style.width = "1020px";
 
-          <div class="plugin-routes" v-if="plugin.runtime_failures && Object.keys(plugin.runtime_failures).length">
-            <div class="plugin-routes-title">Runtime failure counters</div>
-            <div class="plugin-route-item" v-for="(count, endpointName) in plugin.runtime_failures" :key="endpointName">{{ endpointName }}: {{ count }}</div>
-          </div>
+  const title = document.createElement("h2");
+  title.textContent = $("threadDetailsTitle").textContent || `Thread #${state.selectedThreadId} analysis`;
+  section.appendChild(title);
+  section.appendChild($("analyzeOutput").cloneNode(true));
+  if (state.threadAnalysisLog) {
+    const logTitle = document.createElement("h3");
+    logTitle.textContent = "Full log";
+    section.appendChild(logTitle);
+    section.appendChild($("threadAnalysisLog").cloneNode(true));
+  }
 
-          <div class="btn-row" v-if="isAdmin">
-            <button class="ghost" @click="managePlugin(plugin.name, 'load')" :disabled="plugin.state==='running' || !plugin.compatible">Load</button>
-            <button class="ghost" @click="managePlugin(plugin.name, 'reload')" :disabled="!plugin.compatible">Reload</button>
-            <button class="ghost" @click="managePlugin(plugin.name, 'health')">Health</button>
-            <button class="ghost" @click="togglePluginDiagnostics(plugin.name)">{{ isPluginDiagnosticsOpen(plugin.name) ? 'Hide diagnostics' : 'Diagnostics' }}</button>
-            <button class="danger" @click="managePlugin(plugin.name, 'unload')" :disabled="plugin.state==='stopped'">Unload</button>
-          </div>
+  document.body.appendChild(section);
+  try {
+    await exportElementToPdf(section, `thread-analysis-${state.selectedThreadId}.pdf`, title.textContent);
+  } catch (error) {
+    $("threadCreateStatus").textContent = `Export failed: ${error.message}`;
+  } finally {
+    section.remove();
+  }
+}
 
-          <div class="btn-row" v-if="getPluginModalLaunchers(plugin).length">
-            <button
-              v-for="endpoint in getPluginModalLaunchers(plugin)"
-              :key="endpoint.name"
-              class="secondary"
-              @click="openPluginModal(plugin, endpoint.name)"
-              :disabled="!plugin.available || !plugin.compatible || pluginModalLoading"
-            >
-              {{ endpoint.description || ('Open ' + endpoint.name) }}
-            </button>
-          </div>
+async function exportPromptAnalysisPdf() {
+  if (!state.selectedPromptChainId) {
+    $("promptChainCreateStatus").textContent = "Select a prompt chain first";
+    return;
+  }
+  const section = buildPromptAnalysisExportNode();
+  document.body.appendChild(section);
+  try {
+    await exportElementToPdf(
+      section,
+      `prompt-chain-analysis-${state.selectedPromptChainId}.pdf`,
+      `Prompt chain #${state.selectedPromptChainId} analysis`,
+    );
+  } catch (error) {
+    $("promptChainCreateStatus").textContent = `Export failed: ${error.message}`;
+  } finally {
+    section.remove();
+  }
+}
 
-          <div class="plugin-routes" v-if="isPluginDiagnosticsOpen(plugin.name)">
-            <div class="plugin-routes-title">Diagnostics</div>
-            <p v-if="isPluginDiagnosticsLoading(plugin.name)" style="margin:0;color:var(--muted)">Loading diagnostics...</p>
-            <template v-else>
-              <p v-if="getPluginDiagnostics(plugin.name)?.error" class="status-err" style="margin:0">{{ getPluginDiagnostics(plugin.name).error }}</p>
-              <template v-else>
-                <div class="plugin-route-item">State: {{ getPluginDiagnostics(plugin.name)?.state || 'unknown' }}</div>
-                <div class="plugin-route-item">Lifecycle active: {{ getPluginDiagnostics(plugin.name)?.lifecycle_active ? 'yes' : 'no' }}</div>
-                <div class="plugin-route-item">Health failures: {{ getPluginDiagnostics(plugin.name)?.health_failures ?? 0 }}</div>
-                <div class="plugin-route-item">Endpoint diagnostics:</div>
-                <div
-                  class="plugin-route-item"
-                  v-for="entry in (getPluginDiagnostics(plugin.name)?.endpoint_diagnostics || [])"
-                  :key="'endpoint-' + plugin.name + '-' + entry.endpoint_name"
-                >
-                  {{ entry.endpoint_name }} | failures: {{ entry.consecutive_failures }} | blocked: {{ entry.blocked ? 'yes' : 'no' }}<template v-if="entry.last_error"> | last error: {{ entry.last_error }}</template>
-                </div>
-                <div class="plugin-route-item">Hook diagnostics:</div>
-                <div
-                  class="plugin-route-item"
-                  v-for="entry in (getPluginDiagnostics(plugin.name)?.hook_diagnostics || [])"
-                  :key="'hook-' + plugin.name + '-' + entry.hook_key"
-                >
-                  {{ entry.hook_key }} | failures: {{ entry.consecutive_failures }} | blocked: {{ entry.blocked ? 'yes' : 'no' }}<template v-if="entry.last_error"> | last error: {{ entry.last_error }}</template>
-                </div>
-              </template>
-            </template>
-          </div>
+async function refreshPromptChains() {
+  if (!state.accessToken) return;
+  const project = $("promptChainProjectFilter").value.trim();
+  const query = project ? `?project=${encodeURIComponent(project)}` : "";
+  try {
+    const rows = await api(`/v1/prompt-versions/chains${query}`);
+    renderPromptChains(rows);
+  } catch (error) {
+    $("promptChainCreateStatus").textContent = `Chain load failed: ${error.message}`;
+  }
+}
 
-          <div class="plugin-routes" v-if="plugin.active_routes.length">
-            <div class="plugin-routes-header">
-              <div class="plugin-routes-title">Registered routes</div>
-              <button type="button" class="ghost plugin-routes-toggle" @click="togglePluginRoutes(plugin.name)">
-                {{ isPluginRoutesOpen(plugin.name) ? 'Hide' : 'Show' }}
-              </button>
-            </div>
-            <div v-if="isPluginRoutesOpen(plugin.name)">
-              <div class="plugin-route-item" v-for="route in plugin.active_routes" :key="route">{{ route }}</div>
-            </div>
-          </div>
+async function loadPromptChainDetails() {
+  if (!state.selectedPromptChainId) return;
+  try {
+    const chain = await api(`/v1/prompt-versions/chains/${state.selectedPromptChainId}`);
+    $("promptChainDetailsTitle").textContent = `Prompt chain #${chain.id}: ${chain.name}`;
+    $("promptChainDetailsHint").textContent = `${chain.project} · updated ${chain.updated_at}`;
 
-          <div class="plugin-controls" v-if="plugin.ui_controls && plugin.ui_controls.length">
-            <div class="plugin-control" v-for="control in plugin.ui_controls" :key="control.name">
-              <label>{{ control.label }}</label>
-              <p v-if="control.description" class="plugin-control-description">{{ control.description }}</p>
+    const versions = await api(`/v1/prompt-versions/chains/${state.selectedPromptChainId}/versions`);
+    renderPromptVersions(versions);
 
-              <label class="gc-switch" v-if="control.control_type==='checkbox'">
-                <input
-                  type="checkbox"
-                  :checked="!!getPluginControlValue(plugin.name, control.name)"
-                  :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
-                  @change="invokePluginControl(plugin, control, $event.target.checked)"
-                />
-                <span class="gc-switch-track"></span>
-                <span class="gc-switch-label">{{ getPluginControlValue(plugin.name, control.name) ? 'Enabled' : 'Disabled' }}</span>
-              </label>
+    if (versions.length && !state.selectedPromptVersionNo) {
+      state.selectedPromptVersionNo = versions[versions.length - 1].version_no;
+      await analyzePromptVersion();
+      await loadPromptVersionDetails();
+      renderPromptVersions(versions);
+    }
 
-              <select
-                v-else-if="control.control_type==='dropdown'"
-                class="select-pretty"
-                :value="getPluginControlValue(plugin.name, control.name)"
-                :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
-                @change="invokePluginControl(plugin, control, $event.target.value)"
-              >
-                <option v-for="option in control.options" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
+    if (state.selectedPromptVersionNo) {
+      await loadPromptVersionDetails();
+      await refreshPromptTests();
+      renderPromptOrchestratorPreviewPlaceholder("Choose Analyze -> Prompt Orchestrator preview to inspect improved prompt output.");
+    }
 
-              <div v-else-if="control.control_type==='button'" class="btn-row">
-                <button class="secondary" @click="invokePluginControl(plugin, control)" :disabled="!canUsePluginControl(plugin, control) || !plugin.available">
-                  {{ control.label }}
-                </button>
-              </div>
+    await analyzePromptChain();
+    await refreshPromptChains();
+  } catch (error) {
+    $("promptChainCreateStatus").textContent = `Load failed: ${error.message}`;
+  }
+}
 
-              <input
-                v-else-if="control.control_type==='text'"
-                :value="getPluginControlValue(plugin.name, control.name)"
-                :placeholder="control.placeholder || ''"
-                :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
-                @change="invokePluginControl(plugin, control, $event.target.value)"
-              />
+async function createPromptChain() {
+  try {
+    const payload = {
+      project: $("promptChainProject").value.trim(),
+      name: $("promptChainName").value.trim(),
+      description: $("promptChainDescription").value.trim() || null,
+      content: $("promptChainInitialContent").value.trim(),
+      notes: $("promptChainInitialNotes").value.trim() || null,
+    };
+    const created = await api("/v1/prompt-versions/chains", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    $("promptChainCreateStatus").textContent = `Created prompt chain #${created.id}`;
+    state.selectedPromptChainId = created.id;
+    state.selectedPromptVersionNo = 1;
+    await refreshPromptChains();
+    await loadPromptChainDetails();
+    setActiveTab("panelPromptVersions");
+  } catch (error) {
+    $("promptChainCreateStatus").textContent = `Create failed: ${error.message}`;
+  }
+}
 
-              <textarea
-                v-else-if="control.control_type==='textarea'"
-                :value="getPluginControlValue(plugin.name, control.name)"
-                :placeholder="control.placeholder || ''"
-                :disabled="!canUsePluginControl(plugin, control) || !plugin.available"
-                @change="invokePluginControl(plugin, control, $event.target.value)"
-              ></textarea>
-            </div>
-          </div>
-          <p v-else class="plugin-empty-note">This plugin does not request visual controls.</p>
+async function createPromptVersion() {
+  if (!state.selectedPromptChainId) {
+    $("promptVersionCreateStatus").textContent = "Select a prompt chain first";
+    return;
+  }
 
-          <p v-if="pluginResponses[plugin.name]" :class="pluginResponses[plugin.name].type === 'err' ? 'status-err' : 'status-ok'">
-            {{ pluginResponses[plugin.name].message }}
-          </p>
-        </fieldset>
-      </div>
-    </div>
+  const content = $("promptVersionContent").value.trim();
+  if (!content) {
+    $("promptVersionCreateStatus").textContent = "Content is required";
+    return;
+  }
 
-    <div class="tab-panel" v-if="activeTab==='admin' && canViewAdmin">
-      <div class="admin-panel" style="margin-top:0;border-top:none;padding-top:0">
-        <div class="admin-panel-header">
-          <div>
-            <h3>Administration</h3>
-            <p>{{ canWrite ? 'Manage projects, users, and project access rights.' : 'Viewer mode: inspect projects, users, and roles without making changes.' }}</p>
-          </div>
-          <button class="ghost" @click="Promise.all([loadRoles(), loadProjects(), loadUsers()])" :disabled="usersLoading || projectsLoading">{{ (usersLoading || projectsLoading) ? 'Loading...' : 'Refresh Admin Data' }}</button>
-        </div>
+  try {
+    const payload = {
+      content,
+      notes: $("promptVersionNotes").value.trim() || null,
+    };
+    const created = await api(`/v1/prompt-versions/chains/${state.selectedPromptChainId}/versions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    $("promptVersionCreateStatus").textContent = `Created v${created.version_no}`;
+    $("promptVersionContent").value = "";
+    $("promptVersionNotes").value = "";
+    state.selectedPromptVersionNo = created.version_no;
+    await loadPromptChainDetails();
+  } catch (error) {
+    $("promptVersionCreateStatus").textContent = `Create version failed: ${error.message}`;
+  }
+}
 
-        <div class="admin-grid">
-          <div class="admin-card">
-            <h4>Projects</h4>
-            <div class="field" v-if="canWrite">
-              <label>New Project Name</label>
-              <input v-model="newProjectForm.name" placeholder="payments" />
-            </div>
-            <div class="btn-row" v-if="canWrite">
-              <button class="secondary" @click="createProjectRecord">Create Project</button>
-            </div>
-            <p v-if="projectsStatus" :class="projectsStatus.includes('Failed') ? 'status-err' : 'status-ok'">{{ projectsStatus }}</p>
-            <p v-if="!projects.length && !projectsLoading" style="color:var(--muted)">No projects yet.</p>
-            <div class="project-list">
-              <div class="project-row" v-for="project in projects" :key="project.id">
-                <div v-if="canWrite && editingProjectId===project.id" class="project-edit-row">
-                  <input v-model="editProjectForm.name" />
-                  <div class="btn-row">
-                    <button class="secondary" @click="saveProjectEdit(project.id)">Save</button>
-                    <button class="ghost" @click="cancelProjectEdit">Cancel</button>
-                  </div>
-                </div>
-                <div v-else class="project-row-static">
-                  <div class="project-name">{{ project.name }}</div>
-                  <div class="btn-row" v-if="canWrite">
-                    <button class="ghost" @click="beginEditProject(project)">Rename</button>
-                    <button class="danger" @click="deleteProjectRecord(project)">Delete</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+async function analyzePromptChain() {
+  if (!state.selectedPromptChainId) {
+    $("promptChainAnalysisSummary").textContent = "Select a prompt chain first.";
+    return;
+  }
+  try {
+    const report = await api(`/v1/prompt-versions/chains/${state.selectedPromptChainId}/analyze`, { method: "POST" });
+    state.promptChainAnalysisPoints = report.points || [];
+    $("promptChainAnalysisSummary").textContent = JSON.stringify(report.summary, null, 2);
+    renderPromptAnalysisTable(state.promptChainAnalysisPoints);
+    renderPromptTrendChart(state.promptChainAnalysisPoints);
+  } catch (error) {
+    state.promptChainAnalysisPoints = [];
+    $("promptChainAnalysisSummary").textContent = `Analyze chain failed: ${error.message}`;
+  }
+}
 
-          <div class="admin-card" v-if="canWrite">
-            <h4>Create User</h4>
-            <div class="field">
-              <label>Username</label>
-              <input v-model="newUserForm.username" placeholder="developer-1" />
-            </div>
-            <div class="field">
-              <label>Password</label>
-              <input type="password" v-model="newUserForm.password" placeholder="Temporary password" />
-            </div>
-            <div class="create-grid">
-              <div class="field">
-                <label>Role</label>
-                <select class="select-pretty" v-model="newUserForm.role">
-                  <option v-for="roleName in roleOptions" :key="roleName" :value="roleName">{{ roleName }}</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Status</label>
-                <select class="select-pretty" v-model="newUserForm.is_active">
-                  <option :value="true">active</option>
-                  <option :value="false">inactive</option>
-                </select>
-              </div>
-            </div>
-            <div class="field">
-              <label>Projects</label>
-              <div class="project-selector" v-if="availableProjectNames.length">
-                <button
-                  type="button"
-                  class="project-pill"
-                  :class="{ active: isProjectSelected(newUserForm, projectName) }"
-                  v-for="projectName in availableProjectNames"
-                  :key="projectName"
-                  @click="toggleProjectSelection(newUserForm, projectName)"
-                >
-                  {{ projectName }}
-                </button>
-              </div>
-              <p v-else class="project-selector-empty">Create at least one project before assigning rights.</p>
-            </div>
-            <div class="btn-row">
-              <button class="secondary" @click="createUserAccount">Create User</button>
-            </div>
-          </div>
+function closeDetailsMenu(menuId) {
+  const menu = $(menuId);
+  if (menu) {
+    menu.open = false;
+  }
+}
 
-          <div class="admin-card admin-card-wide admin-card-full">
-            <h4>Existing Users</h4>
-            <p v-if="usersStatus" :class="usersStatus.includes('Failed') ? 'status-err' : 'status-ok'">{{ usersStatus }}</p>
-            <p v-if="!users.length && !usersLoading" style="color:var(--muted)">No users found.</p>
-            <div class="user-list">
-              <div class="user-card" v-for="user in users" :key="user.id">
-                <div class="user-card-header">
-                  <div>
-                    <div class="user-card-title">{{ user.username }}</div>
-                    <div class="user-card-meta">Role: {{ user.role }} | {{ user.is_active ? 'active' : 'inactive' }}</div>
-                  </div>
-                  <div class="chips">
-                    <span class="chip" v-for="project in user.projects" :key="project">{{ project }}</span>
-                    <span class="chip" v-if="!user.projects.length">all / none assigned</span>
-                  </div>
-                </div>
+async function handlePromptChainAnalyzeChoice(choice, menuId = "promptChainAnalyzeMenu") {
+  closeDetailsMenu(menuId);
+  if (choice === "chain") {
+    await analyzePromptChain();
+    return;
+  }
+  if (choice === "orchestrator") {
+    if (!state.selectedPromptChainId || !state.selectedPromptVersionNo) {
+      $("promptOrchestratorPreview").innerHTML = '<p class="analysis-placeholder">Select a chain and version first.</p>';
+      return;
+    }
+    await previewPromptOrchestrator();
+  }
+}
 
-                <div v-if="canWrite && editingUserId===user.id" class="user-editor">
-                  <div class="field">
-                    <label>Username</label>
-                    <input v-model="editUserForm.username" />
-                  </div>
-                  <div class="create-grid">
-                    <div class="field">
-                      <label>Role</label>
-                      <select class="select-pretty" v-model="editUserForm.role">
-                        <option v-for="roleName in roleOptions" :key="roleName" :value="roleName">{{ roleName }}</option>
-                      </select>
-                    </div>
-                    <div class="field">
-                      <label>Status</label>
-                      <select class="select-pretty" v-model="editUserForm.is_active">
-                        <option :value="true">active</option>
-                        <option :value="false">inactive</option>
-                      </select>
-                    </div>
-                  </div>
-                  <div class="field">
-                    <label>New Password (optional)</label>
-                    <input type="password" v-model="editUserForm.password" placeholder="Leave empty to keep current password" />
-                  </div>
-                  <div class="field">
-                    <label>Projects</label>
-                    <div class="project-selector" v-if="availableProjectNames.length">
-                      <button
-                        type="button"
-                        class="project-pill"
-                        :class="{ active: isProjectSelected(editUserForm, projectName) }"
-                        v-for="projectName in availableProjectNames"
-                        :key="projectName"
-                        @click="toggleProjectSelection(editUserForm, projectName)"
-                      >
-                        {{ projectName }}
-                      </button>
-                    </div>
-                    <p v-else class="project-selector-empty">Create at least one project before assigning rights.</p>
-                  </div>
-                  <div class="btn-row">
-                    <button class="secondary" @click="saveUserEdit(user.id)">Save</button>
-                    <button class="ghost" @click="cancelUserEdit">Cancel</button>
-                  </div>
-                </div>
+async function analyzePromptVersion() {
+  if (!state.selectedPromptChainId || !state.selectedPromptVersionNo) return;
+  try {
+    const report = await api(
+      `/v1/prompt-versions/chains/${state.selectedPromptChainId}/versions/${state.selectedPromptVersionNo}/analyze`,
+      { method: "POST" },
+    );
 
-                <div v-else class="btn-row" v-if="canWrite">
-                  <button class="ghost" @click="beginEditUser(user)">Edit</button>
-                  <button class="danger" :disabled="currentUser.id===user.id" @click="deleteUserAccount(user)">Delete</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    let point = state.promptChainAnalysisPoints.find((item) => item.version_no === state.selectedPromptVersionNo);
+    if (!point) {
+      const chainReport = await api(`/v1/prompt-versions/chains/${state.selectedPromptChainId}/analyze`, { method: "POST" });
+      state.promptChainAnalysisPoints = chainReport.points || [];
+      point = state.promptChainAnalysisPoints.find((item) => item.version_no === state.selectedPromptVersionNo);
+    }
 
-    <!-- ACCOUNT TAB -->
-    <div class="tab-panel" v-if="activeTab==='account'">
-      <h2 style="margin-top:0">Change Password</h2>
-      <p style="color:var(--muted);margin-bottom:1.2rem">You may change your password at most once every 30 minutes.</p>
-      <div style="max-width:420px">
-        <div class="field">
-          <label>Current Password</label>
-          <input type="password" v-model="changePasswordForm.current_password" placeholder="Current password" />
-        </div>
-        <div class="field">
-          <label>New Password</label>
-          <input type="password" v-model="changePasswordForm.new_password" placeholder="New password" />
-        </div>
-        <div class="field">
-          <label>Confirm New Password</label>
-          <input type="password" v-model="changePasswordForm.confirm_password" placeholder="Repeat new password" @keyup.enter="changeOwnPassword" />
-        </div>
-        <div class="btn-row" style="margin-top:0.8rem">
-          <button @click="changeOwnPassword"
-            :disabled="changePasswordBusy || !changePasswordForm.current_password || !changePasswordForm.new_password || !changePasswordForm.confirm_password">
-            {{ changePasswordBusy ? 'Saving…' : 'Change Password' }}
-          </button>
-        </div>
-        <p v-if="changePasswordStatus" :class="changePasswordStatus.startsWith('ok:') ? 'status-ok' : 'status-err'"
-          style="margin-top:0.7rem">{{ changePasswordStatus.replace(/^(ok:|error:)/,'') }}</p>
-      </div>
-    </div>
+    renderPromptVersionAnalysis(report, point || null);
+  } catch (error) {
+    $("promptVersionAnalysis").innerHTML = `<p class="analysis-placeholder">Analyze version failed: ${escapeHtml(error.message)}</p>`;
+  }
+}
 
-    <!-- ABOUT TAB -->
-    <div class="tab-panel" v-if="activeTab==='about'">
-      <div class="about-card">
-        <img src="/PromptMan_240x240.png" alt="PromptMan logo" class="about-logo" />
-        <h2 style="margin-top:0">About PromptMan</h2>
-        <p class="about-motto">The Secure home for LLM and AI Prompts</p>
-        <p><strong>Author:</strong> Alexander Ivanov</p>
-        <p><strong>Email:</strong> <a href="mailto:dev.python.powershell@gmail.com">dev.python.powershell@gmail.com</a></p>
-        <p><strong>GitHub:</strong> <a href="https://github.com/VeryComplexAndLongName/PromptMan" target="_blank" rel="noopener noreferrer">https://github.com/VeryComplexAndLongName/PromptMan</a></p>
-      </div>
-    </div>
+async function runPromptTest() {
+  if (!state.selectedPromptChainId || !state.selectedPromptVersionNo) {
+    $("promptTestRunStatus").textContent = "Select a chain and version first";
+    return;
+  }
+  try {
+    const run = await api(
+      `/v1/prompt-versions/chains/${state.selectedPromptChainId}/versions/${state.selectedPromptVersionNo}/test-runs`,
+      { method: "POST" },
+    );
+    $("promptTestRunStatus").textContent = `Test run created: ${run.id}`;
+    await refreshPromptTests(run.id);
+  } catch (error) {
+    $("promptTestRunStatus").textContent = `Run test failed: ${error.message}`;
+  }
+}
 
-    <div class="modal-backdrop" v-if="optimizerModalOpen" @click.self="closeOptimizerModal">
-      <div class="modal-card">
-        <div class="modal-header">
-          <h3>Prompt Optimization</h3>
-          <button class="ghost" @click="closeOptimizerModal">Close</button>
-        </div>
+async function refreshPromptTests(preferredRunId = null) {
+  if (!state.selectedPromptChainId || !state.selectedPromptVersionNo) {
+    state.promptTestRuns = [];
+    state.selectedPromptTestRunId = null;
+    renderPromptTestRuns([]);
+    renderPromptTestRunPlaceholder("Select a prompt version to view test runs.");
+    return;
+  }
+  try {
+    const rows = await api(
+      `/v1/prompt-versions/chains/${state.selectedPromptChainId}/versions/${state.selectedPromptVersionNo}/test-runs?limit=50`,
+    );
+    state.promptTestRuns = Array.isArray(rows) ? rows : [];
+    renderPromptTestRuns(state.promptTestRuns);
 
-        <p class="status-err" v-if="optimizerError">{{ optimizerError }}</p>
-        <p v-if="optimizerStatus" style="margin:0 0 8px;color:var(--muted)">
-          Status: {{ optimizerStatus }}
-        </p>
-        <p v-if="optimizerLoading" style="margin:0 0 10px;color:var(--muted)">Optimization is running on backend ...</p>
+    const selectedId = preferredRunId || state.selectedPromptTestRunId || state.promptTestRuns[0]?.id || null;
+    state.selectedPromptTestRunId = selectedId;
+    const selected = state.promptTestRuns.find((item) => item.id === selectedId);
+    if (selected) {
+      renderPromptTestRunDetails(selected);
+    } else {
+      renderPromptTestRunPlaceholder();
+    }
+    renderPromptTestRuns(state.promptTestRuns);
+  } catch (error) {
+    $("promptTestRunStatus").textContent = `Load test runs failed: ${error.message}`;
+    renderPromptTestRunPlaceholder(`Load test runs failed: ${error.message}`);
+  }
+}
 
-        <div class="optimizer-log-box">
-          <div class="optimizer-log-title">Execution log</div>
-          <div class="optimizer-log-empty" v-if="!optimizerLogs.length">No log entries yet.</div>
-          <div
-            class="optimizer-log-line"
-            v-for="(entry, idx) in optimizerLogs"
-            :key="idx"
-            :class="'log-' + entry.level"
-          >
-            [{{ entry.ts }}] {{ entry.message }}
-          </div>
-        </div>
+function getSelectedPromptTestRun() {
+  return state.promptTestRuns.find((item) => item.id === state.selectedPromptTestRunId) || null;
+}
 
-        <div v-if="!optimizerLoading">
-          <div class="md-content" style="margin-top:10px" v-html="md(optimizedMarkdown || buildPromptMarkdown(optimizedDraft))"></div>
-          <div class="btn-row" style="margin-top:12px" v-if="canWrite">
-            <button class="secondary" :disabled="optimizerLoading" @click="reoptimizePrompt">Reoptimize</button>
-            <button @click="applyOptimizedPrompt">Update Prompt</button>
-          </div>
-        </div>
-      </div>
-    </div>
+function exportPromptTestRunJson() {
+  const run = getSelectedPromptTestRun();
+  if (!run) {
+    $("promptTestRunStatus").textContent = "Select a test run first";
+    return;
+  }
+  const blob = new Blob([JSON.stringify(run, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `prompt-test-run-${run.id}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 
-    <div
-      class="modal-backdrop"
-      v-if="pluginModalOpen"
-      @pointerdown.self="handlePluginModalBackdropPointerDown"
-      @click.self="handlePluginModalBackdropClick"
-    >
-      <div class="modal-card">
-        <div class="modal-header">
-          <div>
-            <h3>{{ pluginModalSession?.modal?.title || pluginModalPluginName || 'Plugin Modal' }}</h3>
-            <p v-if="pluginModalSession?.modal?.description" style="margin:4px 0 0;color:var(--muted)">{{ pluginModalSession.modal.description }}</p>
-          </div>
-          <div class="btn-row" style="margin-top:0">
-            <button class="ghost" v-if="pluginModalSession?.modal?.allow_stop !== false" @click="stopPluginModal" :disabled="pluginModalLoading || pluginModalSession?.state === 'stopped'">{{ pluginModalSession?.modal?.stop_label || 'Stop Plugin' }}</button>
-            <button class="ghost" @click="closePluginModal(true)">{{ pluginModalSession?.modal?.close_label || 'Close' }}</button>
-          </div>
-        </div>
+async function exportPromptTestRunPdf() {
+  const run = getSelectedPromptTestRun();
+  if (!run) {
+    $("promptTestRunStatus").textContent = "Select a test run first";
+    return;
+  }
+  const section = document.createElement("section");
+  section.style.background = "#ffffff";
+  section.style.padding = "14px";
+  section.style.fontFamily = '"Space Grotesk", Arial, sans-serif';
+  section.style.width = "1020px";
 
-        <p class="status-err" v-if="pluginModalError">{{ pluginModalError }}</p>
-        <p v-if="pluginModalStatus" style="margin:0 0 8px;color:var(--muted)">Status: {{ pluginModalStatus }}</p>
-        <p v-if="pluginModalLoading" style="margin:0 0 10px;color:var(--muted)">Modal operation is running on backend ...</p>
+  const heading = document.createElement("h2");
+  heading.textContent = `Prompt test run ${run.id}`;
+  section.appendChild(heading);
 
-        <div class="plugin-modal-tabs" v-if="pluginModalTabs.length">
-          <button
-            class="plugin-modal-tab-btn"
-            v-for="tab in pluginModalTabs"
-            :key="'plugin-modal-tab-' + tab.id"
-            :class="{ active: pluginModalActiveTab === tab.id }"
-            @click="selectPluginModalTab(tab.id)"
-            type="button"
-          >
-            {{ tab.label || tab.id }}
-          </button>
-        </div>
+  const details = $("promptTestRunDetails").cloneNode(true);
+  section.appendChild(details);
+  document.body.appendChild(section);
 
-        <div class="md-content" v-if="pluginModalBodyMarkdown" v-html="md(pluginModalBodyMarkdown)"></div>
+  try {
+    await exportElementToPdf(section, `prompt-test-run-${run.id}.pdf`, heading.textContent);
+  } catch (error) {
+    $("promptTestRunStatus").textContent = `Export failed: ${error.message}`;
+  } finally {
+    section.remove();
+  }
+}
 
-        <div class="plugin-chart-panels" v-if="pluginModalCharts.length">
-          <div class="plugin-chart-panel" v-for="chart in pluginModalCharts" :key="chart.id">
-            <div class="plugin-chart-title" :data-tooltip="chart.tooltip || undefined">{{ chart.title || chart.id }}</div>
-            <div class="plugin-chart-y-label" v-if="chart.y_label">{{ chart.y_label }}</div>
-            <div class="plugin-chart-empty" v-if="!chart.points || !chart.points.length">No chart data.</div>
-            <div class="plugin-chart-bars" v-else>
-              <div class="plugin-chart-row" v-for="(point, idx) in chart.points" :key="chart.id + '-point-' + idx">
-                <div class="plugin-chart-point-label">{{ point.label }}</div>
-                <div class="plugin-chart-track">
-                  <div class="plugin-chart-fill" :style="getPluginModalChartPointStyle(chart, point)"></div>
-                </div>
-                <div class="plugin-chart-value">{{ Number(point.value || 0).toFixed(4) }}</div>
-              </div>
-            </div>
-          </div>
-        </div>
+async function loadPromptVersionDetails() {
+  if (!state.selectedPromptChainId || !state.selectedPromptVersionNo) {
+    $("promptVersionMarkdown").innerHTML = "";
+    return;
+  }
+  try {
+    const version = await api(
+      `/v1/prompt-versions/chains/${state.selectedPromptChainId}/versions/${state.selectedPromptVersionNo}`,
+    );
+    renderMarkdown($("promptVersionMarkdown"), version.content || "");
+  } catch (error) {
+    $("promptVersionMarkdown").textContent = `Load version content failed: ${error.message}`;
+  }
+}
 
-        <div
-          class="optimizer-log-box"
-          v-if="(pluginModalActiveTab === 'inputs' || !pluginModalTabs.length) && (pluginModalSession?.logs?.length || pluginModalSession?.last_error || pluginModalSession?.state)"
-        >
-          <div class="optimizer-log-title">Modal session</div>
-          <div class="optimizer-log-empty" v-if="!pluginModalSession?.logs?.length && !pluginModalSession?.last_error">No modal log entries yet.</div>
-          <div class="optimizer-log-line log-warn" v-if="pluginModalSession?.state">State: {{ pluginModalSession.state }}</div>
-          <div class="optimizer-log-line log-error" v-if="pluginModalSession?.last_error">Error: {{ pluginModalSession.last_error }}</div>
-          <div class="optimizer-log-line" v-for="(entry, idx) in (pluginModalSession?.logs || [])" :key="'modal-log-' + idx">{{ entry }}</div>
-        </div>
+async function loadSettings() {
+  if (state.currentUser?.role !== "admin") return;
+  try {
+    $("settingsStatus").textContent = "";
+    await loadProviderMeta();
+    await loadRoles();
+    state.settings = await api("/v1/admin/config/");
+    renderOptimizerSettings();
+    renderUserRoleOptions();
+    await syncOptimizerModels();
+    await syncCompressionModels();
+    await syncTestLlmModels();
+    updateLlmSaveButtonsState();
+    renderSettingsTable();
+    await refreshUsers();
+  } catch (error) {
+    $("settingsStatus").textContent = `Settings load failed: ${error.message}`;
+  }
+}
 
-        <div class="plugin-controls plugin-modal-controls" v-if="pluginModalControls.length">
-          <div class="plugin-control" v-for="control in pluginModalControls" :key="control.name">
-            <label>{{ control.label }}</label>
-            <p v-if="control.description" class="plugin-control-description">{{ control.description }}</p>
+async function saveSetting(key, value) {
+  try {
+    await api(`/v1/admin/config/${encodeURIComponent(key)}?value=${encodeURIComponent(value)}`, {
+      method: "PUT",
+    });
+    state.settings[key] = value;
+    $("settingsStatus").textContent = `Saved ${key}`;
+  } catch (error) {
+    $("settingsStatus").textContent = `Save failed for ${key}: ${error.message}`;
+  }
+}
 
-            <label class="gc-switch" v-if="control.control_type==='checkbox'">
-              <input
-                type="checkbox"
-                :checked="!!getPluginModalControlValue(control.name)"
-                :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
-                @change="invokePluginModalControl(control, $event.target.checked)"
-              />
-              <span class="gc-switch-track"></span>
-              <span class="gc-switch-label">{{ getPluginModalControlValue(control.name) ? 'Enabled' : 'Disabled' }}</span>
-            </label>
+function logout() {
+  state.accessToken = "";
+  state.refreshToken = "";
+  state.currentUser = null;
+  state.plugins = [];
+  state.pluginControlValues = {};
+  state.activePluginModal = null;
+  state.selectedThreadId = null;
+  state.threadMessages = [];
+  state.threadAnalysisReport = null;
+  state.threadAnalysisLog = null;
+  state.threadChartLabelMode = "smart";
+  state.selectedPromptChainId = null;
+  state.selectedPromptVersionNo = null;
+  state.promptChainAnalysisPoints = [];
+  state.promptTestRuns = [];
+  state.selectedPromptTestRunId = null;
+  state.settings = {};
 
-            <select
-              v-else-if="control.control_type==='dropdown'"
-              class="select-pretty"
-              :value="getPluginModalControlValue(control.name)"
-              :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
-              @change="invokePluginModalControl(control, $event.target.value)"
-            >
-              <option v-for="option in control.options" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
+  localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
 
-            <div v-else-if="control.control_type==='button'" class="btn-row">
-              <button class="secondary" @click="invokePluginModalControl(control)" :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading">
-                {{ control.label }}
-              </button>
-            </div>
+  $("threadsList").innerHTML = "";
+  $("messagesList").innerHTML = "";
+  renderThreadAnalysisPlaceholder("Select a thread and click Analyze.");
+  $("threadDetailsTitle").textContent = "Thread details";
+  $("threadDetailsHint").textContent = "Select a thread to view messages and analysis.";
 
-            <input
-              v-else-if="control.control_type==='text'"
-              :value="getPluginModalControlValue(control.name)"
-              :placeholder="control.placeholder || ''"
-              :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
-              @change="invokePluginModalControl(control, $event.target.value)"
-            />
+  $("promptChainsList").innerHTML = "";
+  $("promptVersionsList").innerHTML = "";
+  $("promptChainDetailsTitle").textContent = "Prompt chain details";
+  $("promptChainDetailsHint").textContent = "Select a chain to inspect versions and analysis.";
+  $("promptChainAnalysisSummary").textContent = "";
+  $("promptVersionAnalysis").innerHTML = '<p class="analysis-placeholder">Select a version to view analysis.</p>';
+  $("promptTestRunStatus").textContent = "";
+  $("promptTestRunsList").innerHTML = "";
+  renderPromptTestRunPlaceholder("Select a version and run a test.");
+  $("promptVersionMarkdown").innerHTML = "";
+  $("promptChainTrendChart").innerHTML = "";
+  $("promptChainMetricsTable").querySelector("tbody").innerHTML = "";
+  $("pluginsTable").querySelector("tbody").innerHTML = "";
+  $("pluginsStatus").textContent = "Sign in to view plugin catalog.";
+  $("settingsTable").querySelector("tbody").innerHTML = "";
+  $("usersTable").querySelector("tbody").innerHTML = "";
 
-            <textarea
-              v-else-if="control.control_type==='textarea'"
-              :value="getPluginModalControlValue(control.name)"
-              :placeholder="control.placeholder || ''"
-              :disabled="pluginModalSession?.state === 'stopped' || pluginModalLoading"
-              @change="invokePluginModalControl(control, $event.target.value)"
-            ></textarea>
-          </div>
-        </div>
+  $("changePasswordStatus").textContent = "";
+  $("pwdCurrent").value = "";
+  $("pwdNew").value = "";
+  $("menuPassword").value = "";
+  $("authMenuStatus").textContent = "";
 
-        <div class="btn-row" style="margin-top:12px">
-          <button class="secondary" @click="refreshPluginModal" :disabled="pluginModalLoading || !pluginModalSession">Refresh</button>
-        </div>
-      </div>
-    </div>
-    </template>
-  `,
-}).mount("#app");
+  toggleStatusMenu(false);
+  if ($("pluginModalDialog")?.open) {
+    $("pluginModalDialog").close();
+  }
+  renderAuth();
+  updateThreadChartLabelModeButton();
+  setActiveTab("panelCreateThread");
+}
+
+function bindEvents() {
+  $("loginBtn").addEventListener("click", () => login("/v1/auth/login"));
+  $("bootstrapBtn").addEventListener("click", () => login("/v1/auth/bootstrap-admin"));
+  $("logoutBtn").addEventListener("click", logout);
+
+  $("statusToggleBtn").addEventListener("click", () => toggleStatusMenu());
+  document.addEventListener("click", (event) => {
+    const popover = $("statusPopover");
+    if (!popover.contains(event.target)) {
+      toggleStatusMenu(false);
+    }
+  });
+
+  $("changePasswordBtn").addEventListener("click", changePassword);
+
+  document.querySelectorAll(".status-tab").forEach((tabButton) => {
+    tabButton.addEventListener("click", () => {
+      setStatusMenuTab(tabButton.dataset.statusTarget);
+    });
+  });
+
+  document.querySelectorAll(".settings-tab").forEach((tabButton) => {
+    tabButton.addEventListener("click", () => {
+      setSettingsSubTab(tabButton.dataset.settingsTarget);
+    });
+  });
+
+  $("createThreadBtn").addEventListener("click", createThread);
+  $("appendMessageBtn").addEventListener("click", appendMessage);
+  $("refreshThreadsBtn").addEventListener("click", refreshThreads);
+  $("refreshMessagesBtn").addEventListener("click", loadThreadDetails);
+  $("importJsonBtn").addEventListener("click", importJson);
+  $("importTextBtn").addEventListener("click", importText);
+  $("analyzeThreadChainBtn").addEventListener("click", (event) => {
+    event.preventDefault();
+    closeDetailsMenu("threadAnalyzeMenu");
+    analyzeThread();
+  });
+  $("orchestrateAnalyzeThreadChainBtn").addEventListener("click", (event) => {
+    event.preventDefault();
+    closeDetailsMenu("threadAnalyzeMenu");
+    orchestrateAndAnalyzeThreadChain();
+  });
+  $("threadChartLabelModeBtn").addEventListener("click", cycleThreadChartLabelMode);
+  $("exportThreadAnalysisPdfBtn").addEventListener("click", exportThreadAnalysisPdf);
+
+  $("refreshPromptChainsBtn").addEventListener("click", refreshPromptChains);
+  $("createPromptChainBtn").addEventListener("click", createPromptChain);
+  $("refreshPromptVersionsBtn").addEventListener("click", loadPromptChainDetails);
+  $("createPromptVersionBtn").addEventListener("click", createPromptVersion);
+  $("analyzePromptChainBtn").addEventListener("click", (event) => {
+    event.preventDefault();
+    handlePromptChainAnalyzeChoice("chain");
+  });
+  $("previewPromptOrchestratorBtn").addEventListener("click", (event) => {
+    event.preventDefault();
+    handlePromptChainAnalyzeChoice("orchestrator");
+  });
+  $("exportPromptAnalysisPdfBtn").addEventListener("click", exportPromptAnalysisPdf);
+  $("runPromptTestBtn").addEventListener("click", runPromptTest);
+  $("refreshPromptTestsBtn").addEventListener("click", () => refreshPromptTests());
+  $("exportPromptTestRunJsonBtn").addEventListener("click", exportPromptTestRunJson);
+  $("exportPromptTestRunPdfBtn").addEventListener("click", exportPromptTestRunPdf);
+
+  $("refreshPluginsBtn").addEventListener("click", refreshPlugins);
+
+  $("pluginsTable").addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const adminAction = String(target.dataset.pluginAdminAction || "");
+    if (adminAction) {
+      try {
+        const pluginName = String(target.dataset.pluginName || "");
+        await runPluginAdminAction(pluginName, adminAction);
+      } catch (error) {
+        $("pluginsStatus").textContent = `Plugin admin action failed: ${error.message}`;
+      }
+      return;
+    }
+
+    if (target.dataset.pluginControlButton !== "1") return;
+    try {
+      const pluginName = String(target.dataset.pluginName || "");
+      const controlName = String(target.dataset.controlName || "");
+      const scope = String(target.dataset.pluginScope || "runtime");
+      await handlePluginControlAction(pluginName, controlName, true, scope);
+    } catch (error) {
+      $("pluginsStatus").textContent = `Plugin action failed: ${error.message}`;
+    }
+  });
+
+  $("pluginsTable").addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.pluginControlInput !== "1") return;
+
+    try {
+      const pluginName = String(target.dataset.pluginName || "");
+      const controlName = String(target.dataset.controlName || "");
+      const scope = String(target.dataset.pluginScope || "runtime");
+      let nextValue = "";
+      if (target instanceof HTMLInputElement && target.type === "checkbox") {
+        nextValue = target.checked;
+      } else if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) {
+        nextValue = target.value;
+      }
+      await handlePluginControlAction(pluginName, controlName, nextValue, scope);
+    } catch (error) {
+      $("pluginsStatus").textContent = `Plugin control update failed: ${error.message}`;
+    }
+  });
+
+  $("pluginModalControls").addEventListener("click", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.pluginControlButton !== "1") return;
+    try {
+      const controlName = String(target.dataset.controlName || "");
+      await handlePluginControlAction(String(target.dataset.pluginName || ""), controlName, true, "modal");
+    } catch (error) {
+      $("pluginsStatus").textContent = `Modal action failed: ${error.message}`;
+    }
+  });
+
+  $("pluginModalControls").addEventListener("change", async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset.pluginControlInput !== "1") return;
+    try {
+      const controlName = String(target.dataset.controlName || "");
+      let nextValue = "";
+      if (target instanceof HTMLInputElement && target.type === "checkbox") {
+        nextValue = target.checked;
+      } else if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) {
+        nextValue = target.value;
+      }
+      await handlePluginControlAction(String(target.dataset.pluginName || ""), controlName, nextValue, "modal");
+    } catch (error) {
+      $("pluginsStatus").textContent = `Modal control update failed: ${error.message}`;
+    }
+  });
+
+  $("pluginModalCloseBtn").addEventListener("click", closePluginModalSession);
+  $("pluginModalCloseIconBtn").addEventListener("click", closePluginModalSession);
+  $("pluginModalStopBtn").addEventListener("click", async () => {
+    try {
+      await stopPluginModalSession();
+    } catch (error) {
+      $("pluginsStatus").textContent = `Modal stop failed: ${error.message}`;
+    }
+  });
+
+  $("refreshSettingsBtn").addEventListener("click", loadSettings);
+  $("createUserBtn").addEventListener("click", createUserFromSettings);
+  $("refreshUsersBtn").addEventListener("click", refreshUsers);
+
+  $("optimizerProvider").addEventListener("change", async () => {
+    const provider = $("optimizerProvider").value;
+    $("optimizerBaseUrl").value = getDefaultProviderBaseUrl(provider);
+    await syncOptimizerModels();
+  });
+  $("reloadOptimizerModelsBtn").addEventListener("click", syncOptimizerModels);
+  $("saveOptimizerSettingsBtn").addEventListener("click", saveOptimizerSettings);
+  $("optimizerModel").addEventListener("change", updateLlmSaveButtonsState);
+
+  $("compressionProvider").addEventListener("change", async () => {
+    const provider = $("compressionProvider").value;
+    $("compressionBaseUrl").value = getDefaultProviderBaseUrl(provider);
+    await syncCompressionModels();
+  });
+  $("reloadCompressionModelsBtn").addEventListener("click", syncCompressionModels);
+  $("saveCompressionSettingsBtn").addEventListener("click", saveCompressionSettings);
+  $("compressionModel").addEventListener("change", updateLlmSaveButtonsState);
+
+  $("testLlmProvider").addEventListener("change", async () => {
+    const provider = $("testLlmProvider").value;
+    $("testLlmBaseUrl").value = getDefaultProviderBaseUrl(provider) || "http://127.0.0.1:11434";
+    await syncTestLlmModels();
+  });
+  $("reloadTestLlmModelsBtn").addEventListener("click", syncTestLlmModels);
+  $("saveTestLlmSettingsBtn").addEventListener("click", saveTestLlmSettings);
+  $("testLlmModel").addEventListener("change", updateLlmSaveButtonsState);
+
+  $("llmAutoProvider").addEventListener("change", () => {
+    const provider = $("llmAutoProvider").value;
+    $("llmAutoBaseUrl").value = getDefaultProviderBaseUrl(provider) || "";
+  });
+  $("previewLlmAutoBtn").addEventListener("click", previewLlmAutoSetup);
+  $("applyLlmAutoBtn").addEventListener("click", applyLlmAutoSetup);
+
+  document.querySelectorAll(".tab").forEach((tabButton) => {
+    tabButton.addEventListener("click", async () => {
+      const targetId = tabButton.dataset.target;
+      setActiveTab(targetId);
+      if (targetId === "panelPromptVersions") {
+        await refreshPromptChains();
+      }
+      if (targetId === "panelSettings") {
+        await loadSettings();
+        setSettingsSubTab("settingsPanelLlm");
+      }
+      if (targetId === "panelPlugins") {
+        await refreshPlugins();
+      }
+    });
+  });
+}
+
+(async function init() {
+  bindEvents();
+  renderAuth();
+  await loadAppVersion();
+  setActiveTab("panelCreateThread");
+  toggleStatusMenu(false);
+  setStatusMenuTab("statusPanelAuth");
+  setSettingsSubTab("settingsPanelLlm");
+  updateThreadChartLabelModeButton();
+  renderThreadAnalysisPlaceholder("Select a thread and click Analyze.");
+  $("promptVersionAnalysis").innerHTML = '<p class="analysis-placeholder">Select a version to view analysis.</p>';
+  renderPromptTestRunPlaceholder("Select a version and run a test.");
+  renderPluginsTable([]);
+  $("pluginsStatus").textContent = "Sign in to view plugin catalog.";
+  updateLlmSaveButtonsState();
+
+  if (!state.accessToken) return;
+
+  try {
+    state.currentUser = await api("/v1/auth/me");
+    renderAuth();
+    await refreshThreads();
+    await refreshPromptChains();
+    await refreshPlugins();
+    if (state.currentUser?.role === "admin") {
+      await loadSettings();
+    }
+  } catch (_error) {
+    logout();
+  }
+})();

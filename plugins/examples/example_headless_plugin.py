@@ -4,8 +4,13 @@ from typing import Any
 
 from loguru import logger
 
-from plugin_engine import PluginEndpointConfig, PluginHookConfig, PluginLifecycleContext, PluginManifest, PluginRunContext
-
+from plugin_engine import (
+    PluginEndpointConfig,
+    PluginHookConfig,
+    PluginLifecycleContext,
+    PluginManifest,
+    PluginRunContext,
+)
 
 _COUNTERS: dict[str, Any] = {
     "before": 0,

@@ -52,6 +52,12 @@ def _console_log_format(record: dict[str, Any], show_console_source: bool) -> st
 def configure_logging() -> None:
     console_log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"
     show_console_source = os.getenv("SHOW_CONSOLE_SOURCE", "").strip().lower() in {"1", "true", "yes", "on"}
+    file_rotation = os.getenv("LOG_FILE_ROTATION", "").strip()
+
+    # Windows often keeps file handles locked across dev reload/helper processes,
+    # so rotating a shared app.log can fail with WinError 32 during rename.
+    if not file_rotation:
+        file_rotation = "" if os.name == "nt" else "4 MB"
 
     os.makedirs("logs", exist_ok=True)
     logger.remove()
@@ -64,16 +70,19 @@ def configure_logging() -> None:
         colorize=True,
         format=lambda record: _console_log_format(record, show_console_source),
     )
-    logger.add(
-        "logs/app.log",
-        level="DEBUG",
-        rotation="4 MB",
-        retention="10 days",
-        enqueue=True,
-        backtrace=True,
-        diagnose=False,
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS!UTC} UTC | {level} | {name}:{function}:{line} | {message}",
-    )
+    file_sink: dict[str, Any] = {
+        "sink": "logs/app.log",
+        "level": "DEBUG",
+        "enqueue": True,
+        "backtrace": True,
+        "diagnose": False,
+        "format": "{time:YYYY-MM-DD HH:mm:ss.SSS!UTC} UTC | {level} | {name}:{function}:{line} | {message}",
+    }
+    if file_rotation:
+        file_sink["rotation"] = file_rotation
+        file_sink["retention"] = os.getenv("LOG_FILE_RETENTION", "10 days").strip() or "10 days"
+
+    logger.add(**file_sink)
 
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.handlers.clear()

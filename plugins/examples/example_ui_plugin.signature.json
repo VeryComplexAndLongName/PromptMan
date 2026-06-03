@@ -1,0 +1,6 @@
+{
+  "signer_id": "promptman-team",
+  "algorithm": "ed25519",
+  "file": "example_ui_plugin.py",
+  "signature": "aIDOzY0vL8v8GqNdM4/BznWjaTYHk1IT0OBxsQdysC3lrv24kJ/C+oKWOUO7MTbuv/9y52fBNJKUgQnFfbbICQ=="
+}

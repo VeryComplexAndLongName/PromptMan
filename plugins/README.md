@@ -3,6 +3,8 @@
 PromptMan loads plugins from the `plugins/` directory.
 The scan is recursive, so you can organize plugins into subfolders such as `plugins/demos/` or `plugins/workbenches/`.
 
+PromptMan currently uses a conversation-first API surface. Plugin routes under `/v1/plugins/*` are fully supported in this model.
+
 ## Minimal contract
 
 Each plugin is a Python module with five required functions:
@@ -218,7 +220,7 @@ PromptMan includes a transport helper for calling PromptManSign without embeddin
 Use:
 
 ```text
-python plugins/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --signer-id promptman-team
+python plugins_signin/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --signer-id promptman-team
 ```
 
 What it does:
@@ -231,12 +233,12 @@ What it does:
 Optional trusted signer merge:
 
 ```text
-python plugins/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --trusted-signer-json /path/to/promptman-team.trusted-signer.json
+python plugins_signin/sign_via_service.py plugins/my_plugin.py --service-url https://verycomplexandlongname.pythonanywhere.com --username <login> --password <password> --trusted-signer-json /path/to/promptman-team.trusted-signer.json
 ```
 
 With `--trusted-signer-json`, the helper also merges signer record into `plugins/trusted_signers.json`.
 
-Quick reference with only two commands: `plugins/SIGNING_QUICKSTART.md`.
+Quick reference with only two commands: `plugins_signin/SIGNING_QUICKSTART.md`.
 
 ## Role-based access
 

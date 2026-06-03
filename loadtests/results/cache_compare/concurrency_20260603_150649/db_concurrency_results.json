@@ -1,0 +1,90 @@
+{
+  "generated_at": "2026-06-03T12:08:18.688143+00:00",
+  "results": [
+    {
+      "db_mode": "postgres_memory",
+      "run_name": "load_low",
+      "users": 16,
+      "duration_s": 12,
+      "total_requests": 1600,
+      "successes": 1600,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 132.29,
+      "avg_ms": 120.49,
+      "p95_ms": 163.77,
+      "p99_ms": 173.18
+    },
+    {
+      "db_mode": "postgres_memory",
+      "run_name": "load_high",
+      "users": 48,
+      "duration_s": 12,
+      "total_requests": 1600,
+      "successes": 1599,
+      "failures": 1,
+      "failure_rate_pct": 0.06,
+      "rps": 130.59,
+      "avg_ms": 364.52,
+      "p95_ms": 478.29,
+      "p99_ms": 546.77
+    },
+    {
+      "db_mode": "postgres_memory",
+      "run_name": "stress",
+      "users": 96,
+      "duration_s": 16,
+      "total_requests": 1999,
+      "successes": 1998,
+      "failures": 1,
+      "failure_rate_pct": 0.05,
+      "rps": 120.81,
+      "avg_ms": 783.24,
+      "p95_ms": 1051.26,
+      "p99_ms": 1339.85
+    },
+    {
+      "db_mode": "postgres_garnet",
+      "run_name": "load_low",
+      "users": 16,
+      "duration_s": 12,
+      "total_requests": 1587,
+      "successes": 1587,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 131.41,
+      "avg_ms": 121.48,
+      "p95_ms": 164.95,
+      "p99_ms": 174.57
+    },
+    {
+      "db_mode": "postgres_garnet",
+      "run_name": "load_high",
+      "users": 48,
+      "duration_s": 12,
+      "total_requests": 1576,
+      "successes": 1575,
+      "failures": 1,
+      "failure_rate_pct": 0.06,
+      "rps": 128.25,
+      "avg_ms": 370.69,
+      "p95_ms": 488.12,
+      "p99_ms": 541.08
+    },
+    {
+      "db_mode": "postgres_garnet",
+      "run_name": "stress",
+      "users": 96,
+      "duration_s": 16,
+      "total_requests": 2037,
+      "successes": 2037,
+      "failures": 0,
+      "failure_rate_pct": 0.0,
+      "rps": 122.92,
+      "avg_ms": 769.0,
+      "p95_ms": 1014.93,
+      "p99_ms": 1279.66
+    }
+  ],
+  "errors": {}
+}

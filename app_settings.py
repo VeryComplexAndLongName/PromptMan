@@ -28,7 +28,7 @@ from typing import Any
 from loguru import logger
 
 # ---------------------------------------------------------------------------
-# Defaults – must be plain Python values, no DB / no os.getenv calls here
+# Defaults - must be plain Python values, no DB / no os.getenv calls here
 # ---------------------------------------------------------------------------
 
 _DEFAULTS: dict[str, str] = {
@@ -37,6 +37,10 @@ _DEFAULTS: dict[str, str] = {
     "PROMPTMAN_CACHE_MAX_ENTRIES": "512",
     "PROMPTMAN_CACHE_PERSISTENCE_ENABLED": "true",
     "PROMPTMAN_CACHE_PERSISTENCE_LIMIT": "100",
+    "PROMPTMAN_RUNTIME_CACHE_BACKEND": "memory",
+    "PROMPTMAN_RUNTIME_CACHE_URL": "redis://127.0.0.1:6379/0",
+    "PROMPTMAN_RUNTIME_CACHE_NAMESPACE": "promptman",
+    "PROMPTMAN_RUNTIME_CACHE_DISABLE_INTERNAL": "false",
     # plugins
     "PROMPTMAN_PLUGINS_SIGNED_ONLY": "false",
     # optimizer
@@ -47,6 +51,22 @@ _DEFAULTS: dict[str, str] = {
     "OPTIMIZER_API_TOKEN": "",
     "OPTIMIZER_BACKEND": "leo",
     "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+    # prompt compression
+    "PROMPT_COMPRESSION_PROVIDER": "openai",
+    "PROMPT_COMPRESSION_MODEL": "gpt-4o-mini",
+    "PROMPT_COMPRESSION_BASE_URL": "",
+    "PROMPT_COMPRESSION_API_TOKEN": "",
+    "PROMPT_COMPRESSION_BACKEND": "leo",
+    # simulation tests
+    "TEST_LLM_PROVIDER": "ollama",
+    "TEST_LLM_MODEL": "llama3.1:8b",
+    "TEST_LLM_BASE_URL": "http://127.0.0.1:11434",
+    "TEST_LLM_API_TOKEN": "",
+    "TEST_LLM_TIMEOUT_SECONDS": "45",
+    "TEST_LLM_USE_OPTIMIZER_FALLBACK": "false",
+    "TEST_RAG_ENABLED": "false",
+    "TEST_RAG_SOURCE_PATH": "simulations/rag_knowledge.md",
+    "TEST_RAG_TOP_K": "3",
 }
 
 _ALL_KEYS: frozenset[str] = frozenset(_DEFAULTS)
@@ -75,7 +95,7 @@ def get_int(key: str, default: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Mutation – used at startup and by the admin endpoint
+# Mutation - used at startup and by the admin endpoint
 # ---------------------------------------------------------------------------
 
 def apply(key: str, value: str) -> None:
@@ -99,7 +119,7 @@ def load_from_db(db: Any) -> None:
     Missing DB rows keep the default value and are inserted so the table stays
     complete.
     """
-    from crud.common import get_global_config, set_global_config  # local import – DB layer
+    from crud.common import get_global_config, set_global_config  # local import - DB layer
 
     loaded = 0
     for key, default_value in _DEFAULTS.items():

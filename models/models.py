@@ -9,7 +9,6 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
-    Table,
     Text,
     UniqueConstraint,
     func,
@@ -18,12 +17,6 @@ from sqlalchemy.orm import Mapped, relationship
 
 from database import Base
 
-prompt_tags = Table(
-    "prompt_tags",
-    Base.metadata,
-    Column("prompt_id", ForeignKey("prompts.id", ondelete="CASCADE"), primary_key=True),
-    Column("tag_id", ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
-)
 
 class Project(Base):
     __tablename__ = "projects"
@@ -35,8 +28,9 @@ class Project(Base):
     id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
     name: Mapped[str] = Column(String, nullable=False, index=True)  # type: ignore[assignment]
 
-    prompts: Mapped[list["Prompt"]] = relationship("Prompt", back_populates="project_ref", cascade="all, delete-orphan")
     project_access: Mapped[list["ProjectAccess"]] = relationship("ProjectAccess", back_populates="project_ref", cascade="all, delete-orphan")
+    conversation_threads: Mapped[list["ConversationThread"]] = relationship("ConversationThread", back_populates="project_ref", cascade="all, delete-orphan")
+    prompt_chains: Mapped[list["PromptChain"]] = relationship("PromptChain", back_populates="project_ref", cascade="all, delete-orphan")
 
 
 class Role(Base):
@@ -50,32 +44,6 @@ class Role(Base):
     name: Mapped[str] = Column(String, nullable=False, index=True)  # type: ignore[assignment]
 
     users: Mapped[list["User"]] = relationship("User", back_populates="role_ref")
-
-
-class Prompt(Base):
-    __tablename__ = "prompts"
-    __table_args__ = (
-        UniqueConstraint("name", "project_id", name="uq_prompt_name_project_id"),
-        CheckConstraint("trim(name) <> ''", name="ck_prompts_name_not_blank"),
-    )
-
-    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
-    name: Mapped[str] = Column(String, index=True, nullable=False)  # type: ignore[assignment]
-    project_id: Mapped[int] = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False)  # type: ignore[assignment]
-    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
-    updated_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
-    created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
-    updated_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
-
-    project_ref: Mapped["Project"] = relationship("Project", back_populates="prompts")
-    versions: Mapped[list["PromptVersion"]] = relationship("PromptVersion", back_populates="prompt", cascade="all, delete-orphan")
-    tags: Mapped[list["Tag"]] = relationship("Tag", secondary=prompt_tags, back_populates="prompts")
-    created_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], back_populates="created_prompts")
-    updated_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[updated_by_id], back_populates="updated_prompts")
-
-    @property
-    def project(self) -> str:
-        return self.project_ref.name
 
 
 class User(Base):
@@ -93,11 +61,12 @@ class User(Base):
     password_changed_at: Mapped[datetime.datetime | None] = Column(DateTime(timezone=True), nullable=True)  # type: ignore[assignment]
 
     role_ref: Mapped["Role"] = relationship("Role", back_populates="users")
-    config: Mapped["Config | None"] = relationship("Config", back_populates="user", cascade="all, delete-orphan", uselist=False)
     project_access: Mapped[list["ProjectAccess"]] = relationship("ProjectAccess", back_populates="user", cascade="all, delete-orphan")
-    created_prompts: Mapped[list["Prompt"]] = relationship("Prompt", foreign_keys="Prompt.created_by_id", back_populates="created_by_ref")
-    updated_prompts: Mapped[list["Prompt"]] = relationship("Prompt", foreign_keys="Prompt.updated_by_id", back_populates="updated_by_ref")
-    created_prompt_versions: Mapped[list["PromptVersion"]] = relationship("PromptVersion", foreign_keys="PromptVersion.created_by_id", back_populates="created_by_ref")
+    created_threads: Mapped[list["ConversationThread"]] = relationship("ConversationThread", foreign_keys="ConversationThread.created_by_id", back_populates="created_by_ref")
+    created_messages: Mapped[list["ConversationMessage"]] = relationship("ConversationMessage", foreign_keys="ConversationMessage.created_by_id", back_populates="created_by_ref")
+    created_prompt_chains: Mapped[list["PromptChain"]] = relationship("PromptChain", foreign_keys="PromptChain.created_by_id", back_populates="created_by_ref")
+    updated_prompt_chains: Mapped[list["PromptChain"]] = relationship("PromptChain", foreign_keys="PromptChain.updated_by_id", back_populates="updated_by_ref")
+    created_prompt_chain_versions: Mapped[list["PromptChainVersion"]] = relationship("PromptChainVersion", foreign_keys="PromptChainVersion.created_by_id", back_populates="created_by_ref")
 
     @property
     def role(self) -> str:
@@ -122,21 +91,6 @@ class ProjectAccess(Base):
         return self.project_ref.name
 
 
-class Config(Base):
-    __tablename__ = "configs"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_configs_user_id"),)
-
-    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
-    user_id: Mapped[int] = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # type: ignore[assignment]
-    llm_provider: Mapped[str | None] = Column(String, nullable=True)  # type: ignore[assignment]
-    llm_model: Mapped[str | None] = Column(String, nullable=True)  # type: ignore[assignment]
-    llm_base_url: Mapped[str | None] = Column(String, nullable=True)  # type: ignore[assignment]
-    llm_timeout_seconds: Mapped[int | None] = Column(Integer, nullable=True)  # type: ignore[assignment]
-    llm_api_token_encrypted: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
-
-    user: Mapped["User"] = relationship("User", back_populates="config")
-
-
 class CacheRequest(Base):
     __tablename__ = "cache_requests"
     __table_args__ = (
@@ -150,49 +104,100 @@ class CacheRequest(Base):
     lru: Mapped[int] = Column(BigInteger, nullable=False, default=0)  # type: ignore[assignment]
 
 
-class Tag(Base):
-    __tablename__ = "tags"
-
-    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
-    name: Mapped[str] = Column(String, unique=True, index=True, nullable=False)  # type: ignore[assignment]
-
-    prompts: Mapped[list["Prompt"]] = relationship("Prompt", secondary=prompt_tags, back_populates="tags")
-
-
-class PromptVersion(Base):
-    __tablename__ = "prompt_versions"
-    __table_args__ = (
-        UniqueConstraint("prompt_id", "version", name="uq_prompt_version"),
-        UniqueConstraint(
-            "role",
-            "task",
-            "context",
-            "constraints",
-            "output_format",
-            "examples",
-            name="uq_prompt_version_content_fields",
-        ),
-    )
-
-    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
-    prompt_id: Mapped[int] = Column(Integer, ForeignKey("prompts.id", ondelete="CASCADE"))  # type: ignore[assignment]
-    version: Mapped[int] = Column(Integer)  # type: ignore[assignment]
-    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
-    created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
-    role: Mapped[str | None] = Column(String, nullable=True)  # type: ignore[assignment]
-    task: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]
-    context: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
-    constraints: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
-    output_format: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
-    examples: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
-
-    prompt: Mapped["Prompt"] = relationship("Prompt", back_populates="versions")
-    created_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], back_populates="created_prompt_versions")
-
-
 class GlobalConfig(Base):
     __tablename__ = "global_config"
 
     key = Column(String, primary_key=True, index=True)
     value = Column(Text, nullable=True)
     description = Column(Text, nullable=True)  # Optional: for admin UI context
+
+
+class ConversationThread(Base):
+    __tablename__ = "conversation_threads"
+
+    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
+    project_id: Mapped[int] = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False)  # type: ignore[assignment]
+    title: Mapped[str] = Column(String, nullable=False, index=True)  # type: ignore[assignment]
+    source: Mapped[str] = Column(String, nullable=False, default="manual")  # type: ignore[assignment]
+    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    updated_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
+
+    project_ref: Mapped["Project"] = relationship("Project", back_populates="conversation_threads")
+    created_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], back_populates="created_threads")
+    messages: Mapped[list["ConversationMessage"]] = relationship("ConversationMessage", back_populates="thread_ref", cascade="all, delete-orphan")
+    imports: Mapped[list["ConversationImport"]] = relationship("ConversationImport", back_populates="thread_ref", cascade="all, delete-orphan")
+
+
+class ConversationMessage(Base):
+    __tablename__ = "conversation_messages"
+    __table_args__ = (
+        UniqueConstraint("thread_id", "seq_no", name="uq_conversation_message_thread_seq"),
+    )
+
+    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
+    thread_id: Mapped[int] = Column(Integer, ForeignKey("conversation_threads.id", ondelete="CASCADE"), nullable=False, index=True)  # type: ignore[assignment]
+    seq_no: Mapped[int] = Column(Integer, nullable=False)  # type: ignore[assignment]
+    role: Mapped[str] = Column(String, nullable=False, index=True)  # type: ignore[assignment]
+    content: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]
+    metadata_json: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
+    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
+
+    thread_ref: Mapped["ConversationThread"] = relationship("ConversationThread", back_populates="messages")
+    created_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], back_populates="created_messages")
+
+
+class ConversationImport(Base):
+    __tablename__ = "conversation_imports"
+
+    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
+    thread_id: Mapped[int] = Column(Integer, ForeignKey("conversation_threads.id", ondelete="CASCADE"), nullable=False, index=True)  # type: ignore[assignment]
+    import_format: Mapped[str] = Column(String, nullable=False, index=True)  # type: ignore[assignment]
+    status: Mapped[str] = Column(String, nullable=False, default="pending", index=True)  # type: ignore[assignment]
+    raw_payload: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]
+    error_message: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
+    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    completed_at: Mapped[datetime.datetime | None] = Column(DateTime(timezone=True), nullable=True)  # type: ignore[assignment]
+
+    thread_ref: Mapped["ConversationThread"] = relationship("ConversationThread", back_populates="imports")
+
+
+class PromptChain(Base):
+    __tablename__ = "prompt_chains"
+    __table_args__ = (
+        UniqueConstraint("project_id", "name", name="uq_prompt_chains_project_name"),
+        CheckConstraint("trim(name) <> ''", name="ck_prompt_chains_name_not_blank"),
+    )
+
+    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
+    project_id: Mapped[int] = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)  # type: ignore[assignment]
+    name: Mapped[str] = Column(String, nullable=False, index=True)  # type: ignore[assignment]
+    description: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
+    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    updated_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
+    updated_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
+
+    project_ref: Mapped["Project"] = relationship("Project", back_populates="prompt_chains")
+    created_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], back_populates="created_prompt_chains")
+    updated_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[updated_by_id], back_populates="updated_prompt_chains")
+    versions: Mapped[list["PromptChainVersion"]] = relationship("PromptChainVersion", back_populates="chain_ref", cascade="all, delete-orphan")
+
+
+class PromptChainVersion(Base):
+    __tablename__ = "prompt_chain_versions"
+    __table_args__ = (
+        UniqueConstraint("chain_id", "version_no", name="uq_prompt_chain_versions_chain_version"),
+    )
+
+    id: Mapped[int] = Column(Integer, primary_key=True, index=True)  # type: ignore[assignment]
+    chain_id: Mapped[int] = Column(Integer, ForeignKey("prompt_chains.id", ondelete="CASCADE"), nullable=False, index=True)  # type: ignore[assignment]
+    version_no: Mapped[int] = Column(Integer, nullable=False)  # type: ignore[assignment]
+    content: Mapped[str] = Column(Text, nullable=False)  # type: ignore[assignment]
+    notes: Mapped[str | None] = Column(Text, nullable=True)  # type: ignore[assignment]
+    created_at: Mapped[datetime.datetime] = Column(DateTime(timezone=True), nullable=False, server_default=func.now())  # type: ignore[assignment]
+    created_by_id: Mapped[int | None] = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)  # type: ignore[assignment]
+
+    chain_ref: Mapped["PromptChain"] = relationship("PromptChain", back_populates="versions")
+    created_by_ref: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], back_populates="created_prompt_chain_versions")

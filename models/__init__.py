@@ -1,14 +1,29 @@
 from database import Base
 from models.models import (
     CacheRequest,
-    Config,
+    ConversationImport,
+    ConversationMessage,
+    ConversationThread,
+    GlobalConfig,
     Project,
     ProjectAccess,
-    Prompt,
-    PromptVersion,
+    PromptChain,
+    PromptChainVersion,
     Role,
-    Tag,
     User,
 )
 
-__all__ = ["Base", "CacheRequest", "Config", "Project", "ProjectAccess", "Prompt", "PromptVersion", "Role", "Tag", "User"]
+__all__ = [
+    "Base",
+    "CacheRequest",
+    "ConversationImport",
+    "ConversationMessage",
+    "ConversationThread",
+    "GlobalConfig",
+    "Project",
+    "ProjectAccess",
+    "PromptChain",
+    "PromptChainVersion",
+    "Role",
+    "User",
+]

@@ -9,8 +9,7 @@ from sqlalchemy.orm import Session
 
 import crud
 from database import SessionLocal, close_db_session, run_db_call
-from models.models import Config, User
-from optimizer.service import build_optimizer_config, get_runtime_optimizer_config
+from models.models import User
 from security import (
     ACCESS_TOKEN_TTL_SECONDS,
     REFRESH_TOKEN_TTL_SECONDS,
@@ -254,56 +253,6 @@ def ensure_project_access(user: User, project: str) -> None:
         return
     if project not in allowed_projects:
         raise HTTPException(status_code=404, detail="Prompt not found")
-
-
-def serialize_optimizer_config(config: Config | None) -> dict[str, Any]:
-    if config is None:
-        return get_runtime_optimizer_config()
-
-    if all(
-        value is None
-        for value in (
-            config.llm_provider,
-            config.llm_model,
-            config.llm_base_url,
-            config.llm_timeout_seconds,
-            config.llm_api_token_encrypted,
-        )
-    ):
-        return get_runtime_optimizer_config()
-
-    overrides = {
-        "llm_provider": config.llm_provider,
-        "llm_model": config.llm_model,
-        "llm_base_url": config.llm_base_url,
-        "llm_timeout_seconds": config.llm_timeout_seconds,
-        "llm_api_token": decrypt_secret(config.llm_api_token_encrypted),
-    }
-    result = build_optimizer_config(overrides)
-    result["runtime_has_llm_api_token"] = bool(config and config.llm_api_token_encrypted)
-    return result
-
-
-def get_or_create_personal_config(db: Session, user: User) -> Config:
-    return crud.get_or_create_user_config(db, user.id)
-
-
-def update_personal_config(db: Session, user: User, payload: dict[str, Any]) -> dict[str, Any]:
-    config = get_or_create_personal_config(db, user)
-    if "llm_provider" in payload and payload.get("llm_provider") is not None:
-        config.llm_provider = str(payload["llm_provider"]).strip().lower() or "ollama"
-    if "llm_model" in payload and payload.get("llm_model") is not None:
-        config.llm_model = str(payload["llm_model"]).strip() or "qwen2.5:0.5b"
-    if "llm_base_url" in payload and payload.get("llm_base_url") is not None:
-        config.llm_base_url = str(payload["llm_base_url"]).strip() or "http://127.0.0.1:11434"
-    if "llm_timeout_seconds" in payload and payload.get("llm_timeout_seconds") is not None:
-        config.llm_timeout_seconds = max(5, int(payload["llm_timeout_seconds"]))
-    if "llm_api_token" in payload:
-        config.llm_api_token_encrypted = encrypt_secret(payload.get("llm_api_token"))
-    db.add(config)
-    db.commit()
-    db.refresh(config)
-    return serialize_optimizer_config(config)
 
 
 def maybe_bootstrap_admin(db: Session) -> None:
