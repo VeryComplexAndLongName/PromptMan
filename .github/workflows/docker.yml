@@ -1,9 +1,9 @@
 name: Build and Push PromptMan Docker Image
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -24,14 +24,30 @@ jobs:
       id: version
       shell: bash
       run: |
-        python -c "import os, tomllib; from pathlib import Path; data = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8')); project = data['project']; name = str(project['name']).strip(); version = str(project['version']).strip(); description = str(project.get('description', '')).replace('\n', ' ').strip(); ghcr_owner = os.environ['GITHUB_REPOSITORY_OWNER'].strip().lower(); dockerhub_namespace = os.environ.get('DOCKERHUB_USERNAME', '').strip().lower(); fp = open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8'); fp.write(f'name={name}\nimage_name={name.lower()}\nversion={version}\ntag=v{version}\ndescription={description}\nghcr_owner={ghcr_owner}\ndockerhub_namespace={dockerhub_namespace}\n'); fp.close()"
+        python -c "import os, tomllib; from pathlib import Path; data = tomllib.loads(Path('pyproject.toml').read_text(encoding='utf-8')); project = data['project']; name = str(project['name']).strip(); version = str(project['version']).strip(); tag = f'v{version}'; description = str(project.get('description', '')).replace('\n', ' ').strip(); ghcr_owner = os.environ['GITHUB_REPOSITORY_OWNER'].strip().lower(); dockerhub_namespace = os.environ.get('DOCKERHUB_USERNAME', '').strip().lower(); fp = open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8'); fp.write(f'name={name}\nimage_name={name.lower()}\nversion={version}\ntag={tag}\ndescription={description}\nghcr_owner={ghcr_owner}\ndockerhub_namespace={dockerhub_namespace}\n'); fp.close()"
       env:
         DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
-    - name: Create git tag from pyproject version
+    - name: Validate release tag matches pyproject version
+      if: github.event_name == 'release'
       shell: bash
       run: |
+        set -euo pipefail
+        RELEASE_TAG="${{ github.event.release.tag_name }}"
+        EXPECTED_TAG="${{ steps.version.outputs.tag }}"
+
+        if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+          echo "::error::Release tag '$RELEASE_TAG' does not match pyproject.toml tag '$EXPECTED_TAG'."
+          exit 1
+        fi
+
+    - name: Create git tag from pyproject version (release only)
+      if: github.event_name == 'release'
+      shell: bash
+      run: |
+        set -euo pipefail
         TAG="${{ steps.version.outputs.tag }}"
+
         if git rev-parse "$TAG" >/dev/null 2>&1; then
           echo "Tag $TAG already exists, skipping."
           exit 0
@@ -42,6 +58,42 @@ jobs:
         git tag -a "$TAG" -m "Release $TAG"
         git push origin "$TAG"
 
+    - name: Compute image tags for current event
+      id: tags
+      shell: bash
+      run: |
+        set -euo pipefail
+        OWNER="${{ steps.version.outputs.ghcr_owner }}"
+        IMAGE="${{ steps.version.outputs.image_name }}"
+        VERSION="${{ steps.version.outputs.version }}"
+        PY_TAG="${{ steps.version.outputs.tag }}"
+        DOCKERHUB_NS="${{ steps.version.outputs.dockerhub_namespace }}"
+
+        if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+          ALL_TAGS="$(printf '%s\n' \
+            "ghcr.io/${OWNER}/${IMAGE}:latest" \
+            "ghcr.io/${OWNER}/${IMAGE}:${VERSION}" \
+            "ghcr.io/${OWNER}/${IMAGE}:${PY_TAG}" \
+            "${DOCKERHUB_NS}/${IMAGE}:latest" \
+            "${DOCKERHUB_NS}/${IMAGE}:${VERSION}" \
+            "${DOCKERHUB_NS}/${IMAGE}:${PY_TAG}")"
+
+          IMAGE_REF="ghcr.io/${OWNER}/${IMAGE}:${VERSION}"
+        else
+          ALL_TAGS="$(printf '%s\n' \
+            "ghcr.io/${OWNER}/${IMAGE}:${VERSION}" \
+            "ghcr.io/${OWNER}/${IMAGE}:${PY_TAG}")"
+
+          IMAGE_REF="ghcr.io/${OWNER}/${IMAGE}:${VERSION}"
+        fi
+
+        {
+          echo "all_tags<<EOF"
+          echo "$ALL_TAGS"
+          echo "EOF"
+          echo "image_ref=$IMAGE_REF"
+        } >> "$GITHUB_OUTPUT"
+
     - name: Login to GHCR
       uses: docker/login-action@v3
       with:
@@ -51,9 +103,41 @@ jobs:
 
     - name: Login to Docker Hub
       uses: docker/login-action@v3
+      if: github.event_name == 'release'
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Remove existing GHCR image for version tags (manual only)
+      if: github.event_name == 'workflow_dispatch'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        OWNER="${{ steps.version.outputs.ghcr_owner }}"
+        IMAGE="${{ steps.version.outputs.image_name }}"
+        VERSION="${{ steps.version.outputs.version }}"
+        PY_TAG="${{ steps.version.outputs.tag }}"
+
+        OWNER_TYPE="$(gh api "/users/${OWNER}" --jq '.type' | tr '[:upper:]' '[:lower:]')"
+        if [ "$OWNER_TYPE" = "organization" ]; then
+          BASE_ENDPOINT="/orgs/${OWNER}/packages/container/${IMAGE}/versions"
+        else
+          BASE_ENDPOINT="/users/${OWNER}/packages/container/${IMAGE}/versions"
+        fi
+
+        VERSION_IDS="$(gh api "${BASE_ENDPOINT}?per_page=100" | jq -r --arg t1 "$VERSION" --arg t2 "$PY_TAG" '.[] | select((.metadata.container.tags // []) | any(. == $t1 or . == $t2)) | .id')"
+
+        if [ -z "$VERSION_IDS" ]; then
+          echo "No existing GHCR image versions found for tags ${VERSION} or ${PY_TAG}."
+          exit 0
+        fi
+
+        for VERSION_ID in $VERSION_IDS; do
+          echo "Deleting GHCR package version id: ${VERSION_ID}"
+          gh api -X DELETE "${BASE_ENDPOINT}/${VERSION_ID}"
+        done
 
     - name: Build and push
       uses: docker/build-push-action@v5
@@ -65,20 +149,14 @@ jobs:
           org.opencontainers.image.version=${{ steps.version.outputs.version }}
           org.opencontainers.image.revision=${{ github.sha }}
           org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-        tags: |
-          ghcr.io/${{ steps.version.outputs.ghcr_owner }}/${{ steps.version.outputs.image_name }}:latest
-          ghcr.io/${{ steps.version.outputs.ghcr_owner }}/${{ steps.version.outputs.image_name }}:${{ steps.version.outputs.version }}
-          ghcr.io/${{ steps.version.outputs.ghcr_owner }}/${{ steps.version.outputs.image_name }}:${{ steps.version.outputs.tag }}
-          ${{ steps.version.outputs.dockerhub_namespace }}/${{ steps.version.outputs.image_name }}:latest
-          ${{ steps.version.outputs.dockerhub_namespace }}/${{ steps.version.outputs.image_name }}:${{ steps.version.outputs.version }}
-          ${{ steps.version.outputs.dockerhub_namespace }}/${{ steps.version.outputs.image_name }}:${{ steps.version.outputs.tag }}
+        tags: ${{ steps.tags.outputs.all_tags }}
 
     - name: Report image size from GHCR
       id: image_size
       shell: bash
       run: |
         set -euo pipefail
-        IMAGE_REF="ghcr.io/${{ steps.version.outputs.ghcr_owner }}/${{ steps.version.outputs.image_name }}:${{ steps.version.outputs.version }}"
+        IMAGE_REF="${{ steps.tags.outputs.image_ref }}"
         docker pull "$IMAGE_REF"
 
         SIZE_BYTES="$(docker image inspect "$IMAGE_REF" --format '{{.Size}}')"
