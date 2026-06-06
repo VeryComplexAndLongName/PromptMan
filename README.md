@@ -60,6 +60,68 @@ uvicorn main:app --reload
 - UI: http://127.0.0.1:8000
 - API docs: http://127.0.0.1:8000/docs
 
+## Optional OpenTelemetry + SigNoz
+
+OpenTelemetry support is optional and uses lazy import. Without OTel dependencies, PromptMan keeps running in standard mode.
+
+Install with optional OTel dependencies:
+
+```powershell
+uv sync --extra otel
+```
+
+Enable OTel:
+
+```powershell
+$env:ENABLE_OTEL = "true"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4317"
+$env:OTEL_SERVICE_NAME = "promptman"
+$env:OTEL_SERVICE_NAMESPACE = "prompt-stack"
+$env:OTEL_DEPLOYMENT_ENVIRONMENT = "dev"
+```
+
+PromptMan initializes and shuts down OTel inside FastAPI lifespan context manager (`@asynccontextmanager`).
+
+Run PromptMan with 2 additional observability containers (OTel Collector + SigNoz):
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.otel.yml up --build
+```
+
+Files used:
+
+- `docker-compose.otel.yml`
+- `observability/otel-collector-config.yaml`
+
+Default endpoints:
+
+- SigNoz UI: http://localhost:8080
+- OTLP gRPC ingest: http://localhost:4317
+- OTLP HTTP ingest: http://localhost:4318
+
+Exposed telemetry (when enabled):
+
+- traces: HTTP request spans and app lifecycle spans
+- metrics: HTTP request count, latency, 5xx errors, startup/shutdown durations
+- logs: PromptMan logs are mirrored to OTLP logs pipeline
+
+Dashboard template blueprints:
+
+- `observability/signoz-dashboard-promptman.yaml`
+- `observability/signoz-dashboard-unified-stack.yaml`
+
+Use the PromptMan dashboard blueprint for API-only monitoring. Use the unified stack blueprint when PromptMan, PromptOrchestrator, and RagflowOrchestrator all export into the same collector and you want one cross-service view in SigNoz.
+
+### Unified Telemetry for PromptMan + PromptOrchestrator + RagflowOrchestrator
+
+All three projects can push telemetry into one collector/sink. To split data in SigNoz, set unique service names:
+
+- PromptMan: `OTEL_SERVICE_NAME=promptman`
+- PromptOrchestrator: `OTEL_SERVICE_NAME=prompt-orchestrator`
+- RagflowOrchestrator: `OTEL_SERVICE_NAME=ragflow-orchestrator`
+
+Keep the same OTLP endpoint for all three projects and use `OTEL_SERVICE_NAMESPACE`/`OTEL_DEPLOYMENT_ENVIRONMENT` for additional filtering.
+
 ## Authentication
 
 On an empty database, bootstrap the first admin:

@@ -6,6 +6,8 @@ from typing import Any
 
 from loguru import logger
 
+from app_core.telemetry import telemetry
+
 
 def _console_log_format(record: dict[str, Any], show_console_source: bool) -> str:
     def _escape_markup(value: object) -> str:
@@ -83,6 +85,12 @@ def configure_logging() -> None:
         file_sink["retention"] = os.getenv("LOG_FILE_RETENTION", "10 days").strip() or "10 days"
 
     logger.add(**file_sink)
+
+    def _telemetry_sink(message: Any) -> None:
+        record = message.record
+        telemetry.emit_log(level_name=record["level"].name, message=record["message"])
+
+    logger.add(_telemetry_sink, level="INFO", enqueue=True, backtrace=False, diagnose=False)
 
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.handlers.clear()

@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from app_core.telemetry import telemetry
+
 
 class ExceptionLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -22,5 +24,12 @@ class ExceptionLoggingMiddleware(BaseHTTPMiddleware):
                 request.url.query,
                 client,
                 duration_ms,
+            )
+            telemetry.record_error(operation="http.exception", error_type="UnhandledException")
+            telemetry.record_http(
+                path=request.url.path,
+                method=request.method,
+                status_code=500,
+                duration_ms=duration_ms,
             )
             return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
