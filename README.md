@@ -60,6 +60,122 @@ uvicorn main:app --reload
 - UI: http://127.0.0.1:8000
 - API docs: http://127.0.0.1:8000/docs
 
+## Optional OpenTelemetry + SigNoz
+
+OpenTelemetry support is optional and uses lazy import. Without OTel dependencies, PromptMan keeps running in standard mode.
+
+SigNoz is expected to run separately (for example, official SigNoz Docker deployment on `http://localhost:8080`).
+
+Install with optional OTel dependencies:
+
+```powershell
+uv sync --extra otel
+```
+
+Enable OTel (host runtime):
+
+```powershell
+$env:ENABLE_OTEL = "true"
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = "localhost:4317"
+$env:OTEL_SERVICE_NAME = "promptman"
+$env:OTEL_SERVICE_NAMESPACE = "prompt-stack"
+$env:OTEL_DEPLOYMENT_ENVIRONMENT = "dev"
+```
+
+PromptMan initializes and shuts down OTel inside FastAPI lifespan context manager (`@asynccontextmanager`).
+
+Default state:
+
+- OpenTelemetry is disabled by default (`ENABLE_OTEL=false`).
+
+Run PromptMan with local OTel Collector:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.otel.yml up --build
+```
+
+Disable OTel (host runtime):
+
+```powershell
+$env:ENABLE_OTEL = "false"
+```
+
+Stop local OTel Collector:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.otel.yml down
+```
+
+Files used:
+
+- `docker-compose.otel.yml`
+- `observability/otel-collector-config.yaml`
+
+Default endpoints:
+
+- SigNoz UI (external): http://localhost:8080
+- OTLP gRPC ingest (local collector): http://localhost:4317
+- OTLP HTTP ingest (local collector): http://localhost:4318
+
+Exposed telemetry (when enabled):
+
+- traces: HTTP request spans and app lifecycle spans
+- metrics: HTTP request count, latency, 5xx errors, startup/shutdown durations
+- logs: PromptMan logs are mirrored to OTLP logs pipeline
+
+### OpenTelemetry Payload Reference
+
+| Название метрики, трейса, лога | Его описание |
+|---|---|
+| `promptman_http_requests_total` | Counter. Total HTTP requests by attributes: `http.method`, `http.route`, `http.status_code`. |
+| `promptman_http_errors_total` | Counter. Error count. Increments for HTTP 5xx responses and explicit backend error events (`operation`, `error.type`). |
+| `promptman_http_latency_ms` | Histogram (ms). Per-request HTTP latency with `http.method`, `http.route`, `http.status_code`. |
+| `promptman_lifecycle_duration_ms` | Histogram (ms). App lifecycle durations with attribute `phase` (`startup`/`shutdown`). |
+| `http.request` | Trace span created around each request in middleware; contains attributes like `http.method`, `http.route`, `http.client_ip`. |
+| `promptman.otel` (logger stream) | OTLP log stream used by telemetry bridge. Receives Loguru records via telemetry sink (`level>=INFO`). |
+| `request.start` / `request.end` / `request.exception` | Key structured application log events exported when OTel is enabled (request ingress/egress/errors with method/path/status/duration). |
+
+### How To Enable / Disable OpenTelemetry
+
+Host runtime:
+
+- Enable: set `ENABLE_OTEL=true` before app start.
+- Disable: set `ENABLE_OTEL=false` (or unset it).
+
+Docker compose override (`docker-compose.otel.yml`):
+
+- Default is disabled: `ENABLE_OTEL=${ENABLE_OTEL:-false}`.
+- Enable explicitly for a run:
+
+```powershell
+$env:ENABLE_OTEL = "true"
+docker compose -f docker-compose.yml -f docker-compose.otel.yml up --build
+```
+
+- Disable explicitly for a run:
+
+```powershell
+$env:ENABLE_OTEL = "false"
+docker compose -f docker-compose.yml -f docker-compose.otel.yml up --build
+```
+
+Dashboard template blueprints:
+
+- `observability/signoz-dashboard-promptman.yaml`
+- `observability/signoz-dashboard-unified-stack.yaml`
+
+Use the PromptMan dashboard blueprint for API-only monitoring. Use the unified stack blueprint when PromptMan, PromptOrchestrator, and RagflowOrchestrator all export into the same collector and you want one cross-service view in SigNoz.
+
+### Unified Telemetry for PromptMan + PromptOrchestrator + RagflowOrchestrator
+
+All three projects can push telemetry into one collector/sink. To split data in SigNoz, set unique service names:
+
+- PromptMan: `OTEL_SERVICE_NAME=promptman`
+- PromptOrchestrator: `OTEL_SERVICE_NAME=prompt-orchestrator`
+- RagflowOrchestrator: `OTEL_SERVICE_NAME=ragflow-orchestrator`
+
+Keep the same OTLP endpoint for all three projects and use `OTEL_SERVICE_NAMESPACE`/`OTEL_DEPLOYMENT_ENVIRONMENT` for additional filtering.
+
 ## Authentication
 
 On an empty database, bootstrap the first admin:

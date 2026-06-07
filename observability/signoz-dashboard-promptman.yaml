@@ -1,0 +1,43 @@
+dashboard:
+  title: PromptMan API Overview
+  description: SigNoz dashboard blueprint for PromptMan HTTP metrics, traces, and logs.
+  variables:
+    - name: env
+      description: deployment.environment resource attribute
+      default: dev
+    - name: service
+      description: service.name resource attribute
+      default: promptman
+  panels:
+    - title: HTTP Requests
+      type: time_series
+      unit: req/s
+      query: sum(rate(promptman_http_requests_total{service_name="$service",deployment_environment="$env"}[5m])) by (http_route, http_method)
+    - title: HTTP 5xx Errors
+      type: time_series
+      unit: err/s
+      query: sum(rate(promptman_http_errors_total{service_name="$service",deployment_environment="$env"}[5m])) by (http_route)
+    - title: HTTP Latency P95
+      type: time_series
+      unit: ms
+      query: histogram_quantile(0.95, sum(rate(promptman_http_latency_ms_bucket{service_name="$service",deployment_environment="$env"}[5m])) by (le, http_route))
+    - title: HTTP Latency P50
+      type: time_series
+      unit: ms
+      query: histogram_quantile(0.50, sum(rate(promptman_http_latency_ms_bucket{service_name="$service",deployment_environment="$env"}[5m])) by (le, http_route))
+    - title: Startup Duration
+      type: time_series
+      unit: ms
+      query: histogram_quantile(0.50, sum(rate(promptman_lifecycle_duration_ms_bucket{service_name="$service",deployment_environment="$env",phase="startup"}[30m])) by (le))
+    - title: Shutdown Duration
+      type: time_series
+      unit: ms
+      query: histogram_quantile(0.50, sum(rate(promptman_lifecycle_duration_ms_bucket{service_name="$service",deployment_environment="$env",phase="shutdown"}[30m])) by (le))
+    - title: Errors by Operation
+      type: bar
+      unit: events/s
+      query: sum(rate(promptman_http_errors_total{service_name="$service",deployment_environment="$env"}[5m])) by (operation, http_route)
+  logs:
+    default_query: service.name = "$service" AND deployment.environment = "$env"
+  traces:
+    span_filter: service.name = "$service" and name = "http.request"

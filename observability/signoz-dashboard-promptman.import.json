@@ -1,0 +1,70 @@
+{
+  "title": "PromptMan API Overview",
+  "description": "Importable dashboard for PromptMan OTel metrics.",
+  "tags": ["signoz", "otel", "promptman"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "title": "HTTP Requests",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(promptman_http_requests_total{service_name=~\"$service\",deployment_environment=~\"$env\"}[5m])) by (http_route, http_method)",
+          "legendFormat": "{{http_method}} {{http_route}}"
+        }
+      ]
+    },
+    {
+      "title": "HTTP 5xx Errors",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(promptman_http_errors_total{service_name=~\"$service\",deployment_environment=~\"$env\"}[5m])) by (http_route)",
+          "legendFormat": "{{http_route}}"
+        }
+      ]
+    },
+    {
+      "title": "HTTP Latency P95",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(promptman_http_latency_ms_bucket{service_name=~\"$service\",deployment_environment=~\"$env\"}[5m])) by (le, http_route))",
+          "legendFormat": "{{http_route}} p95"
+        }
+      ]
+    },
+    {
+      "title": "Lifecycle Startup/Shutdown",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(promptman_lifecycle_duration_ms_bucket{service_name=~\"$service\",deployment_environment=~\"$env\",phase=\"startup\"}[30m])) by (le))",
+          "legendFormat": "startup"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(promptman_lifecycle_duration_ms_bucket{service_name=~\"$service\",deployment_environment=~\"$env\",phase=\"shutdown\"}[30m])) by (le))",
+          "legendFormat": "shutdown"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "type": "custom",
+        "query": "dev,stage,prod",
+        "current": { "text": "dev", "value": "dev" }
+      },
+      {
+        "name": "service",
+        "type": "custom",
+        "query": "promptman",
+        "current": { "text": "promptman", "value": "promptman" }
+      }
+    ]
+  }
+}

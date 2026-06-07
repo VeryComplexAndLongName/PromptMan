@@ -1,0 +1,41 @@
+dashboard:
+  title: Prompt Stack Unified Overview
+  description: Cross-project SigNoz dashboard blueprint for PromptMan, PromptOrchestrator, and RagflowOrchestrator.
+  variables:
+    - name: env
+      description: deployment.environment resource attribute
+      default: dev
+  panels:
+    - title: Requests by Service
+      type: time_series
+      unit: req/s
+      query: |
+        sum(rate(promptman_http_requests_total{deployment_environment="$env"}[5m])) by (service_name)
+        or sum(rate(prompt_build_requests_total{deployment_environment="$env"}[5m])) by (service_name)
+        or sum(rate(rag_search_requests_total{deployment_environment="$env"}[5m])) by (service_name)
+    - title: Errors by Service
+      type: time_series
+      unit: err/s
+      query: |
+        sum(rate(promptman_http_errors_total{deployment_environment="$env"}[5m])) by (service_name)
+        or sum(rate(prompt_errors_total{deployment_environment="$env"}[5m])) by (service_name)
+        or sum(rate(rag_errors_total{deployment_environment="$env"}[5m])) by (service_name)
+    - title: Latency P95 by Service
+      type: time_series
+      unit: ms
+      query: |
+        histogram_quantile(0.95, sum(rate(promptman_http_latency_ms_bucket{deployment_environment="$env"}[5m])) by (le, service_name))
+        or histogram_quantile(0.95, sum(rate(prompt_build_latency_ms_bucket{deployment_environment="$env"}[5m])) by (le, service_name))
+        or histogram_quantile(0.95, sum(rate(rag_operation_latency_ms_bucket{deployment_environment="$env"}[5m])) by (le, service_name))
+    - title: Top Safety Severities
+      type: bar
+      unit: events/s
+      query: sum(rate(prompt_safety_events_total{deployment_environment="$env"}[5m])) by (service_name, severity)
+    - title: RAG Throughput
+      type: time_series
+      unit: chunks/s
+      query: sum(rate(rag_chunks_ingested_total{deployment_environment="$env"}[5m])) by (service_name)
+  logs:
+    default_query: deployment.environment = "$env"
+  traces:
+    span_filter: deployment.environment = "$env"

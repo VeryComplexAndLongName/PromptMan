@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from loguru import logger
 from sqlalchemy.orm import Session
 
+from app_core.telemetry import init_telemetry, shutdown_telemetry, telemetry
+
 
 def resolve_app_version() -> str:
     pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
@@ -107,21 +109,29 @@ def create_app_lifespan(
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        init_telemetry(service_name="promptman")
+        startup_started_ms = perf_counter() * 1000.0
         startup_action()
+        telemetry.record_lifecycle(phase="startup", duration_ms=(perf_counter() * 1000.0) - startup_started_ms)
         plugin_engine = getattr(app.state, "plugin_engine", None)
         if plugin_engine is not None:
             try:
                 await plugin_engine.startup()
             except Exception as exc:
                 logger.exception("plugins.startup.error error={}", exc)
+                telemetry.record_error(operation="plugins.startup", error_type=type(exc).__name__)
         try:
             yield
         finally:
+            shutdown_started_ms = perf_counter() * 1000.0
             if plugin_engine is not None:
                 try:
                     await plugin_engine.shutdown()
                 except Exception as exc:
                     logger.exception("plugins.shutdown.error error={}", exc)
+                    telemetry.record_error(operation="plugins.shutdown", error_type=type(exc).__name__)
             run_shutdown_bootstrap(shutdown_action)
+            telemetry.record_lifecycle(phase="shutdown", duration_ms=(perf_counter() * 1000.0) - shutdown_started_ms)
+            shutdown_telemetry()
 
     return lifespan

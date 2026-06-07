@@ -1,0 +1,74 @@
+{
+  "title": "Prompt Stack Unified Overview",
+  "description": "Importable dashboard for PromptMan + PromptOrchestrator + RagflowOrchestrator.",
+  "tags": ["signoz", "otel", "prompt-stack"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "title": "Requests by Service",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(promptman_http_requests_total{deployment_environment=~\"$env\"}[5m])) by (service_name)",
+          "legendFormat": "promptman {{service_name}}"
+        },
+        {
+          "expr": "sum(rate(prompt_build_requests_total{deployment_environment=~\"$env\"}[5m])) by (service_name)",
+          "legendFormat": "prompt-orchestrator {{service_name}}"
+        },
+        {
+          "expr": "sum(rate(rag_search_requests_total{deployment_environment=~\"$env\"}[5m])) by (service_name)",
+          "legendFormat": "ragflow {{service_name}}"
+        }
+      ]
+    },
+    {
+      "title": "Errors by Service",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum(rate(promptman_http_errors_total{deployment_environment=~\"$env\"}[5m])) by (service_name)",
+          "legendFormat": "promptman {{service_name}}"
+        },
+        {
+          "expr": "sum(rate(prompt_errors_total{deployment_environment=~\"$env\"}[5m])) by (service_name)",
+          "legendFormat": "prompt-orchestrator {{service_name}}"
+        },
+        {
+          "expr": "sum(rate(rag_errors_total{deployment_environment=~\"$env\"}[5m])) by (service_name)",
+          "legendFormat": "ragflow {{service_name}}"
+        }
+      ]
+    },
+    {
+      "title": "Latency P95 by Service",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(promptman_http_latency_ms_bucket{deployment_environment=~\"$env\"}[5m])) by (le, service_name))",
+          "legendFormat": "promptman {{service_name}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(prompt_build_latency_ms_bucket{deployment_environment=~\"$env\"}[5m])) by (le, service_name))",
+          "legendFormat": "prompt-orchestrator {{service_name}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(rag_operation_latency_ms_bucket{deployment_environment=~\"$env\"}[5m])) by (le, service_name))",
+          "legendFormat": "ragflow {{service_name}}"
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "env",
+        "type": "custom",
+        "query": "dev,stage,prod",
+        "current": { "text": "dev", "value": "dev" }
+      }
+    ]
+  }
+}
