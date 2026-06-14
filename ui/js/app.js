@@ -1298,6 +1298,8 @@ function renderPromptVersionAnalysis(report, point = null) {
   const deltaTokensText = point ? formatSigned(point.delta_tokens, 0) : "-";
   const deltaReliabilityText = point ? formatSigned(point.delta_reliability, 2) : "-";
   const deltaCacheHitText = point ? formatSigned(point.delta_cache_hit, 2) : "-";
+  const llmSafetyUsed = Boolean(report.llm_used);
+  const llmSafetySeverity = String(report.llm_severity || "none").toLowerCase();
 
   $("promptVersionAnalysis").innerHTML = `
     <div class="analysis-grid">
@@ -1329,6 +1331,11 @@ function renderPromptVersionAnalysis(report, point = null) {
         <p class="analysis-label">Ambiguity risk</p>
         <p class="analysis-value">${Number(report.ambiguity_risk || 0).toFixed(2)}</p>
       </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Safety LLM</p>
+        <p class="analysis-value"><span class="mode-badge mode-badge-${llmSafetySeverity}">${llmSafetyUsed ? "ON" : "OFF"}</span></p>
+        <p class="analysis-value-small">${escapeHtml(String(report.llm_provider || "-"))} / ${escapeHtml(String(report.llm_model || "-"))}</p>
+      </article>
     </div>
 
     <div class="table-wrap">
@@ -1358,6 +1365,7 @@ function renderPromptVersionAnalysis(report, point = null) {
 
     <p class="analysis-note">Delta values are relative to the previous version in the same chain.</p>
     <p class="analysis-note">Security markers: ${escapeHtml((report.security_markers || []).join(", ")) || "-"}</p>
+    <p class="analysis-note">Safety LLM: ${llmSafetyUsed ? `${escapeHtml(String(report.llm_provider || "-"))} / ${escapeHtml(String(report.llm_model || "-"))} / ${escapeHtml(String(report.llm_severity || "-"))}` : "disabled"}</p>
   `;
 }
 
@@ -1407,6 +1415,8 @@ function renderPromptOrchestratorPreview(report) {
   const recommendations = Array.isArray(report.recommendations) ? report.recommendations : [];
   const optimizerMode = extractOrchestratorMode(recommendations, "optimizer mode:");
   const compressionMode = extractOrchestratorMode(recommendations, "compression mode:");
+  const llmSafetyUsed = Boolean(analysis.llm_used);
+  const llmSafetySeverity = String(analysis.llm_severity || "none").toLowerCase();
 
   $("promptOrchestratorPreview").innerHTML = `
     <div class="analysis-grid">
@@ -1433,6 +1443,11 @@ function renderPromptOrchestratorPreview(report) {
       <article class="analysis-card">
         <p class="analysis-label">Security</p>
         <p class="analysis-value">${renderRiskCell(Number(analysis.injection_risk || 0))} / ${renderRiskCell(Number(analysis.contradiction_risk || 0))} / ${renderRiskCell(Number(analysis.ambiguity_risk || 0))}</p>
+      </article>
+      <article class="analysis-card">
+        <p class="analysis-label">Safety LLM</p>
+        <p class="analysis-value"><span class="mode-badge mode-badge-${llmSafetySeverity}">${llmSafetyUsed ? "ON" : "OFF"}</span></p>
+        <p class="analysis-value-small">${escapeHtml(String(analysis.llm_provider || "-"))} / ${escapeHtml(String(analysis.llm_model || "-"))}</p>
       </article>
       ${renderModeBadge("Optimizer mode", optimizerMode)}
       ${renderModeBadge("Compression mode", compressionMode)}
@@ -1520,6 +1535,17 @@ function renderSettingsTable() {
     "PROMPT_COMPRESSION_BASE_URL",
     "PROMPT_COMPRESSION_BACKEND",
     "PROMPT_COMPRESSION_API_TOKEN",
+    "PROMPT_SAFETY_LLM_ENABLED",
+    "PROMPT_SAFETY_LLM_PROVIDER",
+    "PROMPT_SAFETY_LLM_MODEL",
+    "PROMPT_SAFETY_LLM_BASE_URL",
+    "PROMPT_SAFETY_LLM_BACKEND",
+    "PROMPT_SAFETY_LLM_API_TOKEN",
+    "PROMPT_SAFETY_LLM_TIMEOUT_SECONDS",
+    "PROMPT_SAFETY_LLM_MERGE_STRATEGY",
+    "PROMPT_SAFETY_LLM_FAIL_MODE",
+    "PROMPT_SAFETY_LLM_AUTO_PULL_OLLAMA_MODEL",
+    "PROMPT_SAFETY_LLM_AUTO_REWRITE",
     "TEST_LLM_PROVIDER",
     "TEST_LLM_MODEL",
     "TEST_LLM_BASE_URL",
@@ -1639,6 +1665,7 @@ function updateLlmSaveButtonsState() {
   const pairs = [
     { modelId: "optimizerModel", buttonId: "saveOptimizerSettingsBtn", label: "optimizer" },
     { modelId: "compressionModel", buttonId: "saveCompressionSettingsBtn", label: "compression" },
+    { modelId: "promptSafetyModel", buttonId: "savePromptSafetySettingsBtn", label: "prompt safety" },
     { modelId: "testLlmModel", buttonId: "saveTestLlmSettingsBtn", label: "test" },
   ];
 
@@ -1881,6 +1908,17 @@ async function syncCompressionModels() {
   );
 }
 
+async function syncPromptSafetyModels() {
+  await syncProviderModels(
+    "promptSafetyProvider",
+    "promptSafetyBaseUrl",
+    "promptSafetyApiToken",
+    "promptSafetyModel",
+    "PROMPT_SAFETY_LLM_MODEL",
+    "Prompt safety models",
+  );
+}
+
 async function syncTestLlmModels() {
   await syncProviderModels(
     "testLlmProvider",
@@ -1901,6 +1939,16 @@ function renderOptimizerSettings() {
   const compressionBaseUrl = state.settings.PROMPT_COMPRESSION_BASE_URL || getDefaultProviderBaseUrl(compressionProvider);
   const compressionBackend = state.settings.PROMPT_COMPRESSION_BACKEND || optimizerBackend;
 
+  const safetyEnabled = String(state.settings.PROMPT_SAFETY_LLM_ENABLED || "false").toLowerCase() === "true";
+  const safetyProvider = state.settings.PROMPT_SAFETY_LLM_PROVIDER || "openai";
+  const safetyBaseUrl = state.settings.PROMPT_SAFETY_LLM_BASE_URL || getDefaultProviderBaseUrl(safetyProvider);
+  const safetyBackend = state.settings.PROMPT_SAFETY_LLM_BACKEND || "leo";
+  const safetyTimeout = Number(state.settings.PROMPT_SAFETY_LLM_TIMEOUT_SECONDS || 45);
+  const safetyMergeStrategy = state.settings.PROMPT_SAFETY_LLM_MERGE_STRATEGY || "max";
+  const safetyFailMode = state.settings.PROMPT_SAFETY_LLM_FAIL_MODE || "open";
+  const safetyAutoPull = String(state.settings.PROMPT_SAFETY_LLM_AUTO_PULL_OLLAMA_MODEL || "true").toLowerCase() === "true";
+  const safetyAutoRewrite = String(state.settings.PROMPT_SAFETY_LLM_AUTO_REWRITE || "true").toLowerCase() === "true";
+
   const testProvider = state.settings.TEST_LLM_PROVIDER || "ollama";
   const testBaseUrl = state.settings.TEST_LLM_BASE_URL || getDefaultProviderBaseUrl(testProvider) || "http://127.0.0.1:11434";
   const testTimeout = Number(state.settings.TEST_LLM_TIMEOUT_SECONDS || 45);
@@ -1920,6 +1968,18 @@ function renderOptimizerSettings() {
   $("compressionBaseUrl").value = compressionBaseUrl;
   $("compressionApiToken").value = "";
   $("compressionApiToken").placeholder = TOKEN_PLACEHOLDER;
+
+  renderProviderSelectOptions($("promptSafetyProvider"), safetyProvider);
+  renderBackendSelectOptions($("promptSafetyBackend"), safetyBackend);
+  $("promptSafetyEnabled").value = safetyEnabled ? "true" : "false";
+  $("promptSafetyBaseUrl").value = safetyBaseUrl;
+  $("promptSafetyTimeoutSeconds").value = Number.isFinite(safetyTimeout) ? String(Math.max(3, safetyTimeout)) : "45";
+  $("promptSafetyMergeStrategy").value = safetyMergeStrategy;
+  $("promptSafetyFailMode").value = safetyFailMode;
+  $("promptSafetyAutoPull").value = safetyAutoPull ? "true" : "false";
+  $("promptSafetyAutoRewrite").value = safetyAutoRewrite ? "true" : "false";
+  $("promptSafetyApiToken").value = "";
+  $("promptSafetyApiToken").placeholder = TOKEN_PLACEHOLDER;
 
   renderProviderSelectOptions($("testLlmProvider"), testProvider);
   $("testLlmBaseUrl").value = testBaseUrl;
@@ -1982,6 +2042,42 @@ async function saveCompressionSettings() {
   if (apiToken) {
     await saveSetting("PROMPT_COMPRESSION_API_TOKEN", apiToken);
     $("compressionApiToken").value = "";
+  }
+
+  await loadSettings();
+}
+
+async function savePromptSafetySettings() {
+  const enabled = $("promptSafetyEnabled").value;
+  const provider = $("promptSafetyProvider").value;
+  const model = $("promptSafetyModel").value;
+  const baseUrl = $("promptSafetyBaseUrl").value.trim();
+  const backend = $("promptSafetyBackend").value;
+  const timeoutSeconds = String(Math.max(3, Number($("promptSafetyTimeoutSeconds").value || 45)));
+  const mergeStrategy = $("promptSafetyMergeStrategy").value;
+  const failMode = $("promptSafetyFailMode").value;
+  const autoPull = $("promptSafetyAutoPull").value;
+  const autoRewrite = $("promptSafetyAutoRewrite").value;
+  const apiToken = $("promptSafetyApiToken").value.trim();
+
+  if (!model) {
+    $("settingsStatus").textContent = "Prompt safety model is not selected. Reload models first.";
+    return;
+  }
+
+  await saveSetting("PROMPT_SAFETY_LLM_ENABLED", enabled);
+  await saveSetting("PROMPT_SAFETY_LLM_PROVIDER", provider);
+  await saveSetting("PROMPT_SAFETY_LLM_MODEL", model);
+  await saveSetting("PROMPT_SAFETY_LLM_BASE_URL", baseUrl);
+  await saveSetting("PROMPT_SAFETY_LLM_BACKEND", backend);
+  await saveSetting("PROMPT_SAFETY_LLM_TIMEOUT_SECONDS", timeoutSeconds);
+  await saveSetting("PROMPT_SAFETY_LLM_MERGE_STRATEGY", mergeStrategy);
+  await saveSetting("PROMPT_SAFETY_LLM_FAIL_MODE", failMode);
+  await saveSetting("PROMPT_SAFETY_LLM_AUTO_PULL_OLLAMA_MODEL", autoPull);
+  await saveSetting("PROMPT_SAFETY_LLM_AUTO_REWRITE", autoRewrite);
+  if (apiToken) {
+    await saveSetting("PROMPT_SAFETY_LLM_API_TOKEN", apiToken);
+    $("promptSafetyApiToken").value = "";
   }
 
   await loadSettings();
@@ -2793,6 +2889,7 @@ async function loadSettings() {
     renderUserRoleOptions();
     await syncOptimizerModels();
     await syncCompressionModels();
+    await syncPromptSafetyModels();
     await syncTestLlmModels();
     updateLlmSaveButtonsState();
     renderSettingsTable();
@@ -3047,6 +3144,15 @@ function bindEvents() {
   $("reloadCompressionModelsBtn").addEventListener("click", syncCompressionModels);
   $("saveCompressionSettingsBtn").addEventListener("click", saveCompressionSettings);
   $("compressionModel").addEventListener("change", updateLlmSaveButtonsState);
+
+  $("promptSafetyProvider").addEventListener("change", async () => {
+    const provider = $("promptSafetyProvider").value;
+    $("promptSafetyBaseUrl").value = getDefaultProviderBaseUrl(provider) || "";
+    await syncPromptSafetyModels();
+  });
+  $("reloadPromptSafetyModelsBtn").addEventListener("click", syncPromptSafetyModels);
+  $("savePromptSafetySettingsBtn").addEventListener("click", savePromptSafetySettings);
+  $("promptSafetyModel").addEventListener("change", updateLlmSaveButtonsState);
 
   $("testLlmProvider").addEventListener("change", async () => {
     const provider = $("testLlmProvider").value;

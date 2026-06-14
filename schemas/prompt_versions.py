@@ -87,6 +87,13 @@ class PromptVersionAnalysisOut(BaseModel):
     contradiction_risk: float = 0.0
     ambiguity_risk: float = 0.0
     security_markers: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_score: float | None = None
+    llm_severity: str | None = None
+    llm_reasoning: str | None = None
+    llm_categories: list[str] = Field(default_factory=list)
 
 
 class PromptOrchestratorPreviewOut(BaseModel):
@@ -122,6 +129,13 @@ class PromptTestRunSecurityOut(BaseModel):
     contradiction_risk: float
     ambiguity_risk: float
     markers: list[str] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_score: float | None = None
+    llm_severity: str | None = None
+    llm_reasoning: str | None = None
+    llm_categories: list[str] = Field(default_factory=list)
 
 
 class PromptTestRunRagOut(BaseModel):

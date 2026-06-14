@@ -369,6 +369,75 @@ ASSISTANT: hello"></textarea>
                 <button id="reloadCompressionModelsBtn" class="ghost">Reload models</button>
               </div>
 
+              <h3>Prompt safety LLM</h3>
+              <p class="muted">Эти настройки используются для дополнительной security-проверки промптов.</p>
+              <div class="settings-grid">
+                <label>
+                  PROMPT_SAFETY_LLM_ENABLED
+                  <select id="promptSafetyEnabled">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_PROVIDER
+                  <select id="promptSafetyProvider"></select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_MODEL
+                  <select id="promptSafetyModel"></select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_BASE_URL
+                  <input id="promptSafetyBaseUrl" type="text" placeholder="Provider default URL" />
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_BACKEND
+                  <select id="promptSafetyBackend"></select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_TIMEOUT_SECONDS
+                  <input id="promptSafetyTimeoutSeconds" type="number" min="3" max="600" step="1" />
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_MERGE_STRATEGY
+                  <select id="promptSafetyMergeStrategy">
+                    <option value="max">max</option>
+                    <option value="llm_only">llm_only</option>
+                    <option value="heuristic_only">heuristic_only</option>
+                  </select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_FAIL_MODE
+                  <select id="promptSafetyFailMode">
+                    <option value="open">open</option>
+                    <option value="closed">closed</option>
+                  </select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_AUTO_PULL_OLLAMA_MODEL
+                  <select id="promptSafetyAutoPull">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_AUTO_REWRITE
+                  <select id="promptSafetyAutoRewrite">
+                    <option value="false">false</option>
+                    <option value="true">true</option>
+                  </select>
+                </label>
+                <label>
+                  PROMPT_SAFETY_LLM_API_TOKEN
+                  <input id="promptSafetyApiToken" type="password" placeholder="Enter new token to update" autocomplete="new-password" />
+                </label>
+              </div>
+              <div class="actions">
+                <button id="savePromptSafetySettingsBtn" class="secondary">Save prompt safety settings</button>
+                <button id="reloadPromptSafetyModelsBtn" class="ghost">Reload models</button>
+              </div>
+
               <h3>Test LLM / Test RAG</h3>
               <p class="muted">Эти настройки используются тестовыми прогонами prompt versions и симуляциями.</p>
               <div class="settings-grid">
@@ -514,6 +583,6 @@ ASSISTANT: hello"></textarea>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
     <script src="/ui/js/marked.min.js?v=1"></script>
-    <script src="/ui/js/app.js?v=conversation-11"></script>
+    <script src="/ui/js/app.js?v=conversation-12"></script>
   </body>
 </html>

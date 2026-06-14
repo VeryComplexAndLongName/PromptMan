@@ -57,6 +57,18 @@ _DEFAULTS: dict[str, str] = {
     "PROMPT_COMPRESSION_BASE_URL": "",
     "PROMPT_COMPRESSION_API_TOKEN": "",
     "PROMPT_COMPRESSION_BACKEND": "leo",
+    # prompt safety
+    "PROMPT_SAFETY_LLM_ENABLED": "false",
+    "PROMPT_SAFETY_LLM_PROVIDER": "openai",
+    "PROMPT_SAFETY_LLM_MODEL": "gpt-4o-mini",
+    "PROMPT_SAFETY_LLM_BASE_URL": "",
+    "PROMPT_SAFETY_LLM_API_TOKEN": "",
+    "PROMPT_SAFETY_LLM_BACKEND": "leo",
+    "PROMPT_SAFETY_LLM_TIMEOUT_SECONDS": "45",
+    "PROMPT_SAFETY_LLM_MERGE_STRATEGY": "max",
+    "PROMPT_SAFETY_LLM_FAIL_MODE": "open",
+    "PROMPT_SAFETY_LLM_AUTO_PULL_OLLAMA_MODEL": "true",
+    "PROMPT_SAFETY_LLM_AUTO_REWRITE": "true",
     # simulation tests
     "TEST_LLM_PROVIDER": "ollama",
     "TEST_LLM_MODEL": "llama3.1:8b",
